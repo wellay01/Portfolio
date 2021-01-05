@@ -1,0 +1,427 @@
+---
+title: "HPC Homework"
+author: "Adam Wells"
+date: "11/29/2020"
+output: 
+  html_document: 
+    toc: FALSE
+    toc_depth: 3
+    toc_float: FALSE
+    highlight: haddock
+    theme: flatly
+    df_print: paged
+    number_sections: TRUE
+    code_folding: hide
+    self_contained: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F)
+library(tidyverse)
+library(parallel)
+library(data.table)
+library(kableExtra)
+load("/Users/adamwells/Desktop/STAT5526/HW7/ARC_env.RData")
+setwd("/Users/adamwells/Desktop/STAT5526/HW7/ARC_stat5526")
+```
+
+# Monte Carlo Warm-Up
+
+Here we want to use Monte Carlo methods to reliably estimate pi to the 5th decimal place using Monte Carlo integration via the integral below. By reliably, I mean correct to the 5th decimal place 97 out of 100 times. To do this in a reasonable amount of time without killing your local platform, create a script to do this and submit it to the TinkerCliffs queue to run. When you have determined what N seems sufficient, be sure to validate it, i.e., run it with the proposed N 100 times. Things you should consider:
+
+1. control the seed externally  
+2. mitigate big numbers  
+3. break up the computation into smaller subsets, i.e., different queued jobs  
+
+Report your final N, pi estimate, and the reliability of the algorithm for the two methods. What did you parallelize on? Did you control the seed? How?
+
+
+```{r eval=F}
+args <- commandArgs(TRUE)
+cat(args, sep = "\n")
+
+for(i in 1:length(args)){
+  eval(parse(text=args[[i]]))
+}
+
+pi.estimator<-function(n,seed){
+  R <- 1
+  x <- runif(1e9, min= 0, max= 1)
+  pi.estimate<-4*(sum(sqrt(1-x^2))/n)
+}
+
+n<-seq(100,10000000,100)
+savePI.n <- data_frame(lapply(n, pi.estimator,seed=seed))%>%
+  select(results=1)%>%
+  mutate(rounded=round(as.numeric(results),5))
+
+saveRDS(savePI.n,"PI_n.RDS")
+
+PI_clean<-PI_n%>%
+  mutate(n=n)
+saveRDS(PI_clean,"ARC_stat5526/PI_clean.RDS")
+```
+
+The code used to generate the estimates of pi is included above.  I ran this code in the command line, and set the seed through an external parameter..  A shell script is included in the submitted folder.  I did not parallelize this process, which led to a long compute time (~3-4 hours). I considered values of N from 100 to 1e7 in increments of 100.  The larger the N, the better the estimate.  With an N of 1e7, the final estimate of pi was 3.14102.  The first chart below shows the estimates produced using the ten highest N values.  The second chart shows the accuracy of this method. Estimates of pi (with N=1e7) were 100% accurate to one decimal place, 100% accurate to two decimal places, 61% accurate to 3 decimal places, and 8% accurate to four decimal places, and 2% accurate to 5 decimal places:
+
+```{r fig.align="center"}
+as.data.frame(PI_clean)%>%
+  arrange(desc(n))%>%
+  head(10)%>%
+  select(estimate=rounded,n)%>%
+  kable()%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped","hover"),full_width = F)
+    
+```
+
+
+```{r fig.align="center"}
+test_PIn%>%
+  kable()%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped","hover"),full_width = F)
+```
+
+
+# Monte Carlo Algorithm Comparison
+
+Using the final N determined in Problem 1, determine what precision and accuracy are obtained for the dart method and beer toss approaches. Report a table of accurate digits and the frequency (in %) of obtaining that accuracy for each method, i.e., 3.1 - 1 digit - 100%, 3.14 - 2 digits … in table form.
+
+```{r eval=F}
+pi.estimator<-function(n,seed){
+  R <- 1
+  x <- runif(n, min= 0, max= 1)
+  pi.estimate<-4*(sum(sqrt(1-x^2))/n)
+}
+
+cl<-makeCluster(120)
+registerDoParallel(cl)
+
+test<-foreach(i=1:100,.combine=rbind,.packages=c("dplyr","tibble"))%dopar% {
+  pi.estimator(1e7,NULL)
+  }
+stopCluster(cl)
+
+test_clean<-tibble(test)%>%
+  select(estimate=1)%>%
+  mutate(One=round(estimate,1),
+         Two=round(estimate,2),
+         Three=round(estimate,3),
+         Four=round(estimate,4),
+         Five=round(estimate,5))%>%
+  summarize(`One Digit`=sum(One==3.1),
+            `Two Digits`=sum(Two==3.14),
+            `Three Digits`=sum(Three==3.142),
+            `Four Digits`=sum(Four==3.1416),
+            `Five Digits`=sum(Five==3.14159))
+
+
+saveRDS(test_clean,"ARC_stat5526/test_PIn.RDS")
+
+#Pi beer
+
+pi.beer<-function(n,seed){
+  n <- as.numeric(n)
+  set.seed(seed)
+  x.pos <- runif(n,0,10)
+  y.pos <- runif(n,0,10)
+  rotation <- runif(n,0,pi/2)
+  # figure out the x,y coords of the match endpoints
+  x.max <- x.pos + 0.5* cos(rotation)
+  x.min <- x.pos - 0.5* cos(rotation)
+  y.max <- y.pos + 0.5* sin(rotation)
+  y.min <- y.pos - 0.5* sin(rotation)
+  crosses <- ifelse(ceiling(x.min)==floor(x.max),1,0)
+  # draw the board
+  pi_est <- 2*n/sum(crosses)
+  pi_est
+}
+
+cl<-makeCluster(120)
+registerDoParallel(cl)
+
+test2<-foreach(i=1:100,.combine=rbind,.packages=c("dplyr","tibble"))%dopar% {
+  pi.beer(1e7,NULL)
+}
+stopCluster(cl)
+
+test_clean_beer<-tibble(test2)%>%
+  select(estimate=1)%>%
+  mutate(One=round(estimate,1),
+         Two=round(estimate,2),
+         Three=round(estimate,3),
+         Four=round(estimate,4),
+         Five=round(estimate,5))%>%
+  summarize(`One Digit`=sum(One==3.1),
+            `Two Digits`=sum(Two==3.14),
+            `Three Digits`=sum(Three==3.142),
+            `Four Digits`=sum(Four==3.1416),
+            `Five Digits`=sum(Five==3.14159))
+
+
+saveRDS(test_clean,"ARC_stat5526/test_PI_beer.RDS")
+
+#Pi darts
+
+pi.dart<-function(n,seed){
+  options(digits=15)
+  set.seed(seed)
+  samples =as.numeric(n)
+  point_container <- matrix(0,nrow=samples, ncol=3)
+  i <- 0
+  while(i<samples){
+    i <- i+1
+    current_point <- runif(n=2,min=0,max=1) #staying in first quad
+    dist_from_origin <- sqrt(sum(current_point^2))
+    point_container[i,] <- c(current_point,ifelse(dist_from_origin>1,0,1))
+  }
+  our_pi <- 4*sum(point_container[,3])/samples
+}
+
+cl<-makeCluster(120)
+registerDoParallel(cl)
+
+test3<-foreach(i=1:100,.combine=rbind,.packages=c("dplyr","tibble"))%dopar% {
+  pi.dart(1e7,NULL)
+}
+stopCluster(cl)
+
+test_clean_dart<-tibble(test3)%>%
+  select(estimate=1)%>%
+  mutate(One=round(estimate,1),
+         Two=round(estimate,2),
+         Three=round(estimate,3),
+         Four=round(estimate,4),
+         Five=round(estimate,5))%>%
+  summarize(`One Digit`=sum(One==3.1),
+            `Two Digits`=sum(Two==3.14),
+            `Three Digits`=sum(Three==3.142),
+            `Four Digits`=sum(Four==3.1416),
+            `Five Digits`=sum(Five==3.14159))
+
+
+saveRDS(test_clean,"ARC_stat5526/test_PI_dart.RDS")
+
+```
+
+The code used to generate estimates of pi using the "dart" and "beer toss" approaches is included above.  Using n=1e7, the "dart" method appears to be the most accurate.  The following charts show the accuracy of both methods:
+
+```{r fig.align="center"}
+methods<-bind_rows(test_PI_beer,test_PI_dart)
+row.names(methods)<-c("Beer","Darts")
+
+methods%>%
+  kable%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped","hover"),full_width = F)
+```
+
+# Neural Networks for Linear Regression
+
+I demonstrated you could use neural network frameworks to setup and solve linear regression problems. In what situations might this be appropriate? In the image classification section, we use other activation functions, hidden layers, etc. Why might you use some of these in regression problems? What problems do you see?
+
+In a sense, neural networks are regression models.  They attempt to fit a model to a set of data, and the "fit" is quantified with a loss function.  One could therefore set up a neural network to solve a linear regression problem.  In that case, the loss function would be something like the mean squared error.  Both methods have pros and cons.  Linear models are much simpler and less computationally intensive than neural networks.  Linear models are also easier to interpret, and they allow researchers to draw inferences about the relationship between the independent and dependent variables.  On the other hand, neural networks are far more flexible; they adapt to the shape of the data, dynamically choosing the best type of model.  Neural networks would therefore be appropriate when the data does not meet the assumptions necessary for linear models.  Neural networks would also be appropriate when the model will be used primarily for prediction (rather than inference). 
+
+
+# Neural Networks for Image Classification
+
+In this problem, we have a prototype image classification algorithm, some data etc. We need to benchmark the algorithm, do a parameter sweep and basically see if we can do better. What you have:
+
+1. a job script (deeplearning.sh) and  
+2. an R script (cifar10.R)  
+
+You need to:
+
+1. Modify the R script (and perhaps the job script) to accept runtime arguments to vary hyperparameters you think that might have an effect on the results. Two that come to mind right off are batch size and epochs. You might consider powers of 2 between 16 and 1024 for batch size and epochs between 50 and 300. There are other hyperparameters to play with. Have fun with that.  
+
+I used runtime arguments in nested for-loops to vary the batch size (128,256,512) and the number of epochs (50,75,100).  See the code below.  A shell file is included in the submitted folder.
+
+2. Add a layer to the network and see if you can do better. Are there hyperparameters for this you should sweep?  
+
+I added a third layer, and swept batch size and epochs.  Given more time, one could also examine the predictive accuracy of different numbers of layers as well as different layer parameters.  See the code below.
+
+3. Add to the code to give predictions on the test set. You should be able to use the clothing_predictions.Rmd code as a guide. We all learn by copying others, so fair game.
+
+See code,
+
+```{r eval=F}
+
+args <- commandArgs(TRUE)
+cat(args, sep = "\n")
+
+for(i in 1:length(args)){
+  eval(parse(text=args[[i]]))
+}
+
+
+# Parameters --------------------------------------------------------------
+
+batch_size <- as.numeric(batch)
+epochs <- as.numeric(epochs)
+data_augmentation <- TRUE
+
+filename_RDS <- paste0("hist_epochs_",epochs,"_batch_",batch_size,".RDS")
+output_RDS<-paste0("output_epochs_",epochs,"_batch_",batch_size,".RDS")
+
+# Data Preparation --------------------------------------------------------
+
+# See ?dataset_cifar10 for more info
+cifar10 <- dataset_cifar10()
+
+# Feature scale RGB values in test and train inputs  
+x_train <- cifar10$train$x/255
+x_test <- cifar10$test$x/255
+y_train <- to_categorical(cifar10$train$y, num_classes = 10)
+y_test <- to_categorical(cifar10$test$y, num_classes = 10)
+
+
+# Defining Model ----------------------------------------------------------
+
+# Initialize sequential model
+model <- keras_model_sequential()
+
+model %>%
+  
+  # Start with hidden 2D convolutional layer being fed 32x32 pixel images
+  layer_conv_2d(
+    filter = 32, kernel_size = c(3,3), padding = "same",
+    input_shape = c(32, 32, 3)
+  ) %>%
+  layer_activation("relu") %>%
+  
+  # Second hidden layer
+  layer_conv_2d(filter = 32, kernel_size = c(3,3)) %>%
+  layer_activation("relu") %>%
+  
+  # Use max pooling
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_dropout(0.25) %>%
+  
+  # 3 additional hidden 2D convolutional layers
+  layer_conv_2d(filter = 32, kernel_size = c(3,3), padding = "same") %>%
+  layer_activation("relu") %>%
+  layer_conv_2d(filter = 32, kernel_size = c(3,3)) %>%
+  layer_activation("relu") %>%
+  layer_conv_2d(filter = 32, kernel_size = c(3,3)) %>%
+  layer_activation("relu") %>%
+  
+  # Use max pooling once more
+  layer_max_pooling_2d(pool_size = c(2,2)) %>%
+  layer_dropout(0.25) %>%
+  
+  # Flatten max filtered output into feature vector 
+  # and feed into dense layer
+  layer_flatten() %>%
+  layer_dense(512) %>%
+  layer_activation("relu") %>%
+  layer_dropout(0.5) %>%
+  
+  # Outputs from dense layer are projected onto 10 unit output layer
+  layer_dense(10) %>%
+  layer_activation("softmax")
+
+opt <- optimizer_rmsprop(lr = 0.0001, decay = 1e-6)
+
+model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = opt,
+  metrics = "accuracy"
+)
+
+
+# Training ----------------------------------------------------------------
+#Display training progress by printing a single dot for each completed epoch.
+print_dot_callback <- callback_lambda(
+  on_epoch_end = function(epoch, logs) {
+    if (epoch %% 80 == 0) cat("\n")
+    cat(".")
+  }
+)
+
+if(!data_augmentation){
+  
+  history <- model %>% fit(
+    x_train, y_train,
+    batch_size = batch_size,
+    epochs = epochs,
+    validation_data = list(x_test, y_test),
+    shuffle = TRUE,
+    verbose=1,
+    #    callbacks = list(print_dot_callback)
+  )
+  
+} else {
+  
+  datagen <- image_data_generator(
+    rotation_range = 20,
+    width_shift_range = 0.2,
+    height_shift_range = 0.2,
+    horizontal_flip = TRUE
+  )
+  
+  datagen %>% fit_image_data_generator(x_train)
+  
+  history <- model %>% fit_generator(
+    flow_images_from_data(x_train, y_train, datagen, batch_size = batch_size),
+    steps_per_epoch = as.integer(50000/batch_size),
+    epochs = epochs,
+    validation_data = list(x_test, y_test),
+    verbose=1,
+    #    callbacks = list(print_dot_callback)
+  )
+  
+}
+
+#evaluate the accuracy of the model on training and test data
+score.train<-model%>%evaluate(x_train,y_train,verbose=0)
+score.test<-model%>%evaluate(x_test,y_test,verbose=0)
+
+output<-bind_cols(`Batch Size`=batch_size,
+            Epochs=epochs,
+            `Train Loss`=score.train[1],
+            `Train Accuracy`=score.train[2],
+            `Test Loss`=score.test[1],
+            `Test Accuracy`=score.test[2],)
+
+write_rds(history,paste0("prob4/",filename_RDS),compress="none")
+write_rds(output,paste0("prob4/",output_RDS),compress="none")
+```
+
+# Neural Networks for Image Classification
+
+Create a summary table of the various hyperparameters you tried along with the prediction accuracy on the test set. What combination gave the best prediction accuracy? Create a plot of the final (most accurate training run). What do you see in the plot? Is there any evidence of overfitting? Are there other metrics we should consider in plotting?
+
+The chart below shows the accuracy of predictions based on various batch sizes and epochs.  The most accurate combination has the smallest batch size (128) and largest epoch (100).  This combination is 67.4% accurate in classifying images in the test set.  The following plot shows the accuracy of the model on the training set across 100 epochs.  As the number of epochs increases, accuracy increases, but the rate of change in accuracy decreases; this suggests that one could increase the number of epochs to attain higher accuracy, but there would be a point of diminishing returns.  The plot shows no evidence of overfitting.  Regarding other metrics, it would be interesting to plot accuracy vs. batch and epoch, given a sufficiently large number of batches and epochs.  This would help to determine the ideal values for batch size and epoch.
+
+```{r fig.align="center"}
+output<-bind_rows(output_epochs_50_batch_128,
+                  output_epochs_50_batch_256,
+                  output_epochs_50_batch_512,
+                  output_epochs_75_batch_128,
+                  output_epochs_75_batch_256,
+                  output_epochs_75_batch_512,
+                  output_epochs_100_batch_128,
+                  output_epochs_100_batch_256,
+                  output_epochs_100_batch_512)
+
+output%>%
+  kable()%>%
+  kableExtra::kable_styling(bootstrap_options = c("striped","hover"),full_width = F)
+```
+
+```{r fig.align="center"}
+tibble(hist_epochs_100_batch_128$metrics$accuracy)%>%
+  select(accuracy=1)%>%
+  mutate(epoch=c(1:100))%>%
+  ggplot(mapping=aes(x=epoch,y=accuracy))+
+  geom_line()+
+  labs(title="Accuracy of Best Training Run",x="Epoch",y="Accuracy")
+
+```
+
+
+# Neural Networks for Image Classification
+
+What we have done so far is identify the subject in the picture. Many pictures are scenes with multiple subjects/objects. If we want to identify multiple subjects in a single large image, what would be your process? Write down your algorithm. No math, just general process as you would explain it to your mother.
+
+Neural networks resemble the human mind.  They classify images based on previous experience.  If, for example, I show a child a series of shoes, they can then identify a similar object that they've never seen before as a  "shoe."  Neural networks can do the same thing.  First, you train a neural network on a series of sample images.  Then you test the accuracy of your model by using it to categorize images it has never seen before.  Identifying multiple objects in one image is a little more complex, and there are many valid ways of approaching the task, but the same principles apply.  First, you would train your model by showing it a series of images in which the relevant objects have been correctly tagged.  Second, you would divide your test image into segments or regions, each containing a single object.  Third, you would use your model to identify the object in each region of your image.  
+
+

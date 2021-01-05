@@ -1,0 +1,406 @@
+---
+title: 'STAT 5525: Homework 2'
+author: "Adam Wells"
+date: "Monday, July 22"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(ISLR)
+library(modelr)
+library(dplyr)
+library(gridExtra)
+library(tidyverse)
+library(pander)
+library(parsnip)
+library(parsnip)
+library(rsample)
+library(yardstick)
+library(broom)
+library(rpart)
+library(rpart.plot)
+library(discrim)
+library(recipes)
+library(MASS)
+knitr::opts_chunk$set(echo = TRUE, 
+                      comment = NA, # Recommended
+                      fig.path = "./figures/",  # Store all figures here in relative path (make the folder first)
+                      fig.align = "center",
+                      fig.width = 5.5, # default figure width in inches
+                      fig.height = 5.5, # default figure height in inches
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings
+                      )
+setwd("/Users/adamwells/Desktop/STAT5525/HW2")
+```
+***
+
+# Part I: Logistic Regression
+
+## 1. Set aside a 20% sample to be a test dataset
+
+```{r}
+spambase <- read_csv("~/Desktop/STAT5525/HW2/spambase.csv")
+spambase$spam<-as.factor(spambase$spam)
+
+#The following code uses the rsample package to split the data.
+set.seed(1)
+train_test_split<-initial_split(spambase,prop=0.80)
+train_data<-train_test_split%>%training()
+test_data<-train_test_split%>%testing()
+```
+
+## 2. Fit a logistic model to all of the training data and display the summary.
+
+```{r}
+logistic_model<-logistic_reg("classification")%>%
+  set_engine("glm")%>%
+  fit(spam~.,data=train_data)
+
+pander(tidy(logistic_model))
+```
+
+## 3. Evaluate the fit and simplify the model by eliminating some predictors.  Fit the simplification. (You may use techniques from the Advanced Regression course.) Explain why you chose to eliminate certain predictors and the approach or any technique(s) you used to do so. (Hint: a simple approach based on significance is adequate for this homework.) Display the summary.
+
+All predictors with a p-value greater than 0.05 have been eliminated from the following model.  
+
+```{r}
+formula<-(spam~our+over+remove+internet+free+business+your+n000+money+hp+george+
+        data+n85+technology+meeting+project+re+edu+conference+cf.semicol+cf.exclaim+
+        cf.dollar+cf.pound+crl.longest+crl.total)
+
+logistic_model_reduced<-logistic_reg("classification")%>%
+  set_engine("glm")%>%
+  fit(formula,data=train_data)
+
+pander(tidy(logistic_model_reduced))
+```
+
+## 4. Using the refitted model, the estimated fitted values and a threshold of 0.50 for deciding spam, display a confusion matrix and calculate the overall error rate and the false positive rate.
+
+```{r}
+prediction_glm <- logistic_model_reduced %>%
+  predict(new_data = train_data)%>%
+  bind_cols(train_data[,58])
+
+conf_mat<-prediction_glm%>%
+  conf_mat(spam,.pred_class)
+
+autoplot(conf_mat, type = "heatmap")
+
+overall_error_rate<-
+  sum(prediction_glm$spam!=prediction_glm$.pred_class)/
+  nrow(prediction_glm)
+false_positive_rate<-
+  sum((prediction_glm$.pred_class[prediction_glm$spam==0])==1)/
+  sum(prediction_glm$spam==0)
+error<-
+  as.data.frame(cbind(overall_error_rate,false_positive_rate))
+pander(error,caption="")
+```
+
+
+## 5. Zero false positives are the goal. Using the fitted values find the threshold value that produces approximately zero false positives and re-display the confusion matrix
+
+Zero false positives can only be achieved by letting every email message through.  At that point, we would cease to have a spam filter!  I am going to assume that a false positive rate of 2.5% or less is acceptable.  Lowering the false positive rate also increases the overall error rate.  The goal is to find a good balance.  The confusion matrix below shows that the overall error rate increases to about 10% (from about 8%) when false positives are held below 2.5%.  In this case, the threshold is 0.73.
+
+
+
+
+```{r}
+#The following function takes a columns of probabilities (given by parsnip's predict function) 
+#and sorts them into categories (1,0) based on wether the probability meets a certain threshold)
+prediction<-function(data,probability1,threshold){
+  prediction<-rep(0,nrow(data))
+  for(i in 1:nrow(data))
+    {
+    if(probability1[i]>=threshold)
+      {
+      prediction[i]<-1
+      }
+    else
+      {
+      prediction[i]<-0
+      }
+  }
+  data<-cbind(data,prediction)
+  return(data)
+}
+```
+
+```{r}
+#this function finds a prediction threshold based on a desired rate of false positives. 
+#"Data" must be in the format of a parsnip prediction.  This function is specific to the 
+#spam dataset.
+
+get_threshold<-function(data,prediction_column,false_pos_rate)
+{
+thresh<-c()
+for (i in rev(1:100))
+  {
+  #generate predictions
+  p<-prediction(data,prediction_column,threshold=i/100)
+  #calculate false positive rate
+  fp<-sum((p$prediction[p$spam==0])==1)/sum(p$spam==0)
+  if(fp<=false_pos_rate)
+      {
+      thresh<-c(thresh,i/100)
+      }
+  }
+  return(tail(thresh,1))
+}
+```
+
+
+```{r}
+#generate predictions as probabilities
+prediction_glm <- logistic_model_reduced %>%
+  predict(new_data = train_data,type="prob")%>%
+  bind_cols(train_data[,58])
+
+#find a threshold for predictions based on logistic regression with 
+#a maximum false positive rate of 2.5%
+threshold_log<-get_threshold(prediction_glm,prediction_glm$.pred_1,0.025)
+
+#generate predictions using new threshold
+prediction_glm_threshold<-tibble(prediction(prediction_glm,prediction_glm$.pred_1,threshold_log))%>%
+  mutate(prediction=as.factor(prediction))
+
+#produce confusion matrix
+conf_mat<-prediction_glm_threshold%>%
+  conf_mat(spam,prediction)
+
+autoplot(conf_mat, type = "heatmap")
+```
+
+# Part 2: LDA
+
+## 1. Perform an LDA on the data using only the predictors you decided upon for the simplified logistic regression model. Display the summary results.
+
+```{r}
+LDA_model<-discrim_linear("classification")%>%
+  set_engine("MASS")%>%
+  fit(formula,data=train_data)
+
+LDA_model$fit
+```
+
+## 2.	Interpret the summary results as best you can. We did not discuss this in class so this is a challenge step. A round of brews or “mocktail” to those who try this, once we can get back together.
+
+The LDA output provides "prior probabilities," which indicate that approximately 38.7% of the training data is spam, while 61.3% of the training data is not spam.  The output also provides "group means," which are the average of each predictor within each class.  Consider the predictor "free."  The group means suggest that spam messages are more likely to contain "free" (0.51 times per message on average) than non-spam messages (0.066 times per message on average).  The output also contains "coefficients of linear discrimination" which specify the coefficients in the linear equation that is used to predict whether a message is spam or not.
+
+## 3.	As with the logistic model, use the fitted probabilities to establish a threshold that achieves near zero false positives.
+
+```{r}
+predictions_lda <- LDA_model %>%
+  predict(new_data = train_data,type="prob")%>%
+  bind_cols(train_data[,58])
+
+#find a threshold for predictions based on lda with a maximun false positive rate of 2.5%
+threshold_lda<-get_threshold(predictions_lda,predictions_lda$.pred_1,0.025)
+```
+
+For LDA, the threshold necessary to achieve a false positive rate below 2.5% is `r threshold_lda`.  
+
+
+## 4.	Display the confusion matrix from step 3. Using only this and the confusion matrix from step 5 above, which model would you recommend to use? Explain.
+  
+When we compare the confusion matrices from step 3 and 4, we see that the overall error rate for the lda model (~17%) is much higher than that of the logistic regression model (~10%).  I would therefore recommend the logistic regression model.  
+
+```{r}
+#generate predictions using new threshold
+prediction_lda_threshold<-tibble(prediction(predictions_lda,predictions_lda$.pred_1,threshold_lda))%>%
+  mutate(prediction=as.factor(prediction))
+
+#produce confusion matrix
+conf_mat<-prediction_lda_threshold%>%
+  conf_mat(spam,prediction)
+
+autoplot(conf_mat, type = "heatmap")
+```
+
+# Part 3: Cross-Validation
+## 1.	Perform an iterated 5-fold cross validation of 500 iterations each using both models only the original training data as follows. Use total error rate as the measure or “cost” function, not false positives.
+
+The following tables show samples of the training and validation error rates generated by 5-fold cross validation.  For each model, I use the prediction thresholds established above.
+
+```{r}
+#This function is a modification of code from labs 4 and 5.  It takes a parsnip model 
+#object and makes predictions based on a preset threshold.  It then perfroms k-fold 
+#cross validation and returns the total error rate for the training and validation 
+#sets. This function is specific to the spam dataset.
+
+k.fold.validator <- function(df, K,parsnipModel,threshold) {
+  
+  # this function calculates the errors of a single fold using the fold as the holdout data
+  fold.errors <- function(df, holdout.indices) {
+    train.data <- df[-holdout.indices, ]
+    holdout.data <- df[holdout.indices, ]
+    
+    #clean probability predictions from parsnip model for the training set
+    prediction_train <- parsnipModel %>%
+      predict(new_data = train.data,type="prob")%>%
+      dplyr::select(-.pred_0)%>%
+      rename(pred1=.pred_1)%>%
+      bind_cols(train.data[,58])
+    
+    #uses the "prediction" function (see Part I, problem 5) to make predictions based on 
+    #a preset threshold  
+    train.predict<-as.data.frame(prediction(prediction_train,
+                                            probability1=prediction_train$pred1,
+                                            threshold))%>%
+      mutate(prediction=as.factor(prediction))
+    
+    #calculates total prediction error
+    train.error <- sum(train.predict$spam!=train.predict$prediction)/nrow(train.predict)
+    
+    #clean probability predictions from parsnip model for the holdout set
+    prediction_holdout <- parsnipModel %>%
+      predict(new_data = holdout.data,type="prob")%>%
+      dplyr::select(-.pred_0)%>%
+      rename(pred1=.pred_1)%>%
+      bind_cols(holdout.data[,58])
+    
+    #uses the "prediction" function (see Part I, problem 5) to make predictions based on 
+    #a preset threshold.
+    holdout.predict<-as.data.frame(prediction(prediction_holdout,
+                                              probability1=prediction_holdout$pred1,
+                                              threshold))%>%
+      mutate(prediction=as.factor(prediction))
+ 
+    holdout.error <- sum(holdout.predict$spam!=holdout.predict$prediction)/nrow(holdout.predict)
+    tibble(train.error = train.error, valid.error = holdout.error)
+  }
+  
+  # shuffle the data and create the folds
+  indices <- sample(1:nrow(df))
+  # if argument K == 1 we want to do LOOCV
+  if (K == 1) {
+    K <- nrow(df)
+  }
+  folds <- cut(indices, breaks = K, labels = F)
+  # set error to 0 to begin accumulation of fold error rates
+  errors <- tibble()
+  # iterate on the number of folds
+  for (i in 1:5) {
+    holdout.indices <- which(folds == i, arr.ind = T)
+    folded.errors <- fold.errors(df, holdout.indices)
+    errors <- errors %>%
+      bind_rows(folded.errors)
+  }
+ return(errors)
+}
+```
+
+```{r}
+#five-fold cross validation of LDA model repeated 500 times
+lda_errors<-replicate(500,k.fold.validator(test_data, 5,LDA_model,threshold_lda),simplify = F)%>%
+  purrr::reduce(rbind)
+
+#five-fold cross validation of the logistic regression model repeated 500 times
+log_errors<-replicate(500,k.fold.validator(test_data, 5,logistic_model_reduced,threshold_log),
+                      simplify = F)%>%
+  purrr::reduce(rbind)
+
+#sample of the log_errors dataset
+pander(head(log_errors,5),
+       caption="Sample of error rates from cross-validation of the logistic model")
+
+#sample of the log_errors dataset
+pander(head(lda_errors,5),
+       caption="Sample of error rates from cross-validation of the lda model")
+```
+
+
+## 2.	Similar to what I did in the lab calculate the error rate on the non-fold data (i.e. training error rate) and the validation error on the fold for each fold for each of the 500 iterations. However, at the end do not take the mean of the iterations. Rather keep the separate results. Therefore, at the end you should have 500 values each for non-fold training errors and validation (fold) error rates for both the logistic regression and the LDA fit. In other words, you should have produced 500 estimates of 2 overall error rates for each of 2 models. If you build a data frame from this you should have one consisting of 500 rows and 4 columns.
+
+The following table displays a sample of combined lda and logistic regression errors.  I have transformed it into a "long" format to make it easier to plot.  
+
+```{r}
+#combine results from cross validation procedures.  Tidy the data for graphing.
+df2 <- cbind(log_errors%>%rename(log.train.error=train.error,log.valid.error=valid.error),
+             lda_errors%>%rename(lda.train.error=train.error,lda.valid.error=valid.error))%>%
+  pivot_longer(c(log.train.error,log.valid.error, lda.train.error, lda.valid.error), 
+               names_to = "model", 
+               values_to = "error rate")
+
+#a sample of the tidy data set
+pander(head(df2,4),caption="Sample of combined log and lda error rates")
+
+```
+
+## 3.	Display a ggplot consisting of 4 side-by-side boxplots from the data frame described in step 2.
+
+```{r}
+ggplot(data=df2,mapping=aes(x=as.factor(model), y=`error rate`, fill=model))+
+  geom_boxplot()+
+  labs(x="",y="Total Error Rate",title = "Error Rates of Logistic Regression and LDA Models")+
+  theme(legend.position="none")
+```
+
+### a.	Challenge: Try discussing the similarities between this and doing a bootstrap. Is this like doing a bootstrap?
+
+It is similar to a bootstrap in the sense that a calculation is repeated and the distribution of the results is then examined.  There are, however, a few important differences: First, the bootstrap involves sampling *with* replacement, which allows for the repetition of individual observations within the sample.  By contrast, K-fold cross validation involves sampling *without* replacement.  The sample is split into folds, and each fold is used in turn to validate a model that is trained on the other folds.  If we sampled with replacement, the folds would cease to be distinct from one another.  Second, the bootstrap function would return one value.  If, for example, we wanted to estimate a population mean, we could use the bootstrap to sample from a group of observations multiple times.  The function would then return the mean of all the samples. By contrast, in iterated K-fold validation, we return the errors from each iteration so that we can examine their distribution across iterations.
+
+## 4.	Based on the boxplots and consideration of the false positive goal, which model would recommend? Explain.
+
+The boxplots confirm what we saw in the confusion matrices above: the logistic regression model has lower overall error rates when false positives are held below 2.5%.  For that reason, I would recommend the logistic regression model over the lda model.
+
+## 5.	Using the fits from both models, classify the observations in the held-out test data and display the corresponding confusion matrices. (You should have 2 matrices.) Based on this do you stand by your recommendation in step 4? Explain.
+
+The following confusion matrices show the results of the logistic regression and lda models when applied to the test data.  Here again, the total error rate for the logistic model is lower.  In the end, I would recommend the logistic regression model.
+
+```{r}
+prediction_glm <- logistic_model_reduced %>%
+  predict(new_data = test_data,type="prob")%>%
+  bind_cols(test_data[,58])
+
+#generate predictions using preset threshold
+prediction_glm_threshold<-tibble(prediction(prediction_glm,prediction_glm$.pred_1,threshold_log))%>%
+  mutate(prediction=as.factor(prediction))
+
+#produce confusion matrix
+conf_mat<-prediction_glm_threshold%>%
+  conf_mat(spam,prediction)
+
+autoplot(conf_mat, type = "heatmap")
+
+overall_error_rate<-
+  sum(prediction_glm_threshold$spam!=prediction_glm_threshold$prediction)/
+  nrow(prediction_glm_threshold)
+false_positive_rate<-
+  sum((prediction_glm_threshold$prediction[prediction_glm_threshold$spam==0])==1)/
+  sum(prediction_glm_threshold$spam==0)
+error_logistic<-
+  as.data.frame(cbind(overall_error_rate,false_positive_rate))
+pander(error_logistic,caption="")
+```
+
+```{r}
+predictions_lda <- LDA_model %>%
+  predict(new_data = test_data,type="prob")%>%
+  bind_cols(test_data[,58])
+
+prediction_lda_threshold<-tibble(prediction(predictions_lda,predictions_lda$.pred_1,threshold_lda))%>%
+  mutate(prediction=as.factor(prediction))
+
+#produce confusion matrix
+conf_mat<-prediction_lda_threshold%>%
+  conf_mat(spam,prediction)
+
+autoplot(conf_mat, type = "heatmap")
+
+overall_error_rate<-
+  sum(prediction_lda_threshold$spam!=prediction_lda_threshold$prediction)/
+  nrow(prediction_lda_threshold)
+false_positive_rate<-
+  sum((prediction_lda_threshold$prediction[prediction_lda_threshold$spam==0])==1)/
+  sum(prediction_lda_threshold$spam==0)
+error_lda<-
+  as.data.frame(cbind(overall_error_rate,false_positive_rate))
+pander(error_lda,caption="")
+```

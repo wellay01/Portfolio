@@ -1,0 +1,592 @@
+---
+title: "Medicare Payments and Provider Analysis"
+author: "Adam Wells"
+date: "Dec. 18, 2019"
+output:
+    pdf_document:
+      highlight: haddock
+      keep_tex: no
+      number_sections: no
+    html_document:
+      df_print: paged
+geometry: margin = 0.5in
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+editor_options:
+  chunk_output_type: console
+documentclass: article
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(Stack)
+library(ff)
+library(readr)
+library(ffbase)
+library(kableExtra)
+library(remotes)
+library(ffbase2)
+library(rmarkdown)
+
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+knitr::opts_chunk$set(echo = F, 
+                      comment = NA, # Recommended
+                      fig.path = "./figures/",  # Store all figures here in relative path
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 7,
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings
+                      )
+setwd("/Users/adamwells/Desktop/STAT5054")
+
+
+```
+\newpage
+
+# Overview
+
+According to the Centers for Medicare and Medicaid Service (CMS), Healthcare costs are equivalent to about 18% of the United States' GDP, and roughly 20% of all healthcare spending is related to Medicare and Medicaid.  In order to better understand the distribution of medicare payments to healthcare providers, this report uses exploratory data techniques to analyze data sets known as the “Medicare Fee-for-Service Provider Utilization and Payment Data, Physician and Other Supplier Public Use File.” 
+
+Some highlights from my analysis:
+
+* The distribution of payments to providers was skewed, with top providers receiving an out-sized share of payments. The top 10% of individual providers (ranked by total payments) received `r TopTenPercent`% of payments, and the top 50% of providers received `r Top50Percent`% of payments.  Payments to organizational providers were even more concentrated: The top 10% of organizational providers received `r TopTenPercentO`% of payments, and the top 50% of providers received `r Top50PercentO`% of payments.  
+
+* The highest paid organizational provider, a clinical laboratory in NC, collected $`r round(maxPaymentO/1000000,2)` million between 2012 and 2016. 
+
+* The highest paid individual provider, an ophthalmologist in FL, collected $`r round(maxPaymentI/1000000,2)` million between 2012 and 2016.  This provider performed `r maxServiceI` services during that time (approximately 270 services per day!).
+
+* Concentration in payments reflected concentration in services: The top 10% of individual providers received `r TopTenPercent`% of payments and performed `r Top10Serv`% of services. The top 10% of organizational providers received `r TopTenPercentO`% of payments and performed `r Top10ServO`% of services. 
+
+* There was a significant gender disparity in average payments made to individual providers. Women received $`r AvgDiff*-1` (95% confidence interval: (`r round(conf.int,2)`) less per service on average than their male counterparts with the same "provider type" designation--a `r AvgDiffPercent`% difference.  
+
+# Data Overview
+
+This report examines the “Medicare Fee-for-Service Provider Utilization and Payment Data, Physician and Other Supplier Public Use File,” which was compiled by the Office of Information Products and Data Analytics of the Centers for Medicare and Medicaid Services.  The data sets contain “information on utilization, payment (allowed amount and Medicare payment), and submitted charges by National Provider Identifier (NPI), type of provider, Healthcare Common Procedure Coding System (HCPCS) code, and place of service” from 2012-2017.  Each observation in the data sets corresponds to a particular NPI, which allows for easy cross-referencing between data sets.  The data sets contain information on the provider, including credential and geographical location (zip code, state), the service provided (medicare indicator, service place, hcpcs code), the amount paid (amount charged, amount allowed, amount paid), and so forth.  
+
+These data sets is very large-- approximately 56 million observations and 19 variables. Manipulating large data sets is challenging. R holds data in the computer's memory (RAM), and my computer's memory (8gb) was quickly exhausted.  I therefore used the ff package to create a virtual database, which is only partially held in memory.  From that virtual database, I was able to create new, smaller databases when necessary.  I also made two main modifications to the data.  First, I added a column of total payments (avg.payment * svc.count) in order to gain a better understanding of payments made to providers.  Second, I joined the "claims" data frame to the "providers" data frame in order to explore characteristics of the providers (e.g., gender, credentials, and so forth.)   
+
+```{r}
+providers<-read.csv.ffdf(file="providers.csv")
+claims<-read.csv.ffdf(file="claims.csv")
+hcpcs<-read.csv.ffdf(file="hcpcs.csv")
+
+claims1<-merge.ffdf(x=claims,y=providers,by.x="NPI")
+#claims2<-merge.ffdf(x=claims1,y=hcpcs,by.x="hcpcs.code")
+
+claims.data<-claims1%>%
+  select(year,NPI,svc.count,credentials,prov.type,entity.code,gender,avg.allowed.amt,avg.chrg.amt,avg.payment,state)
+
+claims.data<-as.data.frame(claims.data)
+claims.data<-claims.data%>%
+  filter(year!=2017)%>%
+  mutate(total.payment=avg.payment*svc.count)
+```
+
+# Research Questions & Exploratory Data Analysis
+
+In this section, I will use exploratory data techniques to analyze the overall "shape" of the data and to generate topics for further research. The following charts summarize payment data for individual (IP) and organizational (OP) providers:
+
+```{r}
+paymentDistEnt<-claims.data%>%
+  group_by(entity.code)%>%
+  summarize(`mean payment`=mean(avg.payment), `mean charge` =mean(avg.chrg.amt),`mean allowed charge` =mean(avg.allowed.amt))
+
+k<-kable(paymentDistEnt, caption ="Payments per Service", format = "latex",row.names = F)
+kableExtra::kable_styling(k,latex_options = "hold_position")
+```
+
+\newpage
+
+
+```{r}
+paymentDistProv<-claims.data%>%
+  group_by(NPI)%>%
+  group_by(entity.code,add=TRUE)%>%
+  summarize(`total payments`=sum(total.payment))%>%
+  group_by(entity.code)%>%
+  summarize(`median payment`=median(`total payments`),`max payment`=max(`total payments`),`sum total payment`=sum(`total payments`))
+
+k<-kable(paymentDistProv, caption ="Total Payments to Providers", format = "latex",row.names = F)
+kableExtra::kable_styling(k,latex_options = "hold_position")
+```
+
+
+The following graphs present the top 25 provider types ranked by total payments.  Note that there is quite a bit of range in total payment, even among the top 25 provider types.  (I will investigate the distribution of payments in more detail in the next section.)
+
+```{r}
+
+#Top 25 Individual Provider types
+
+claims.prov.summaryI<-claims.data%>%
+  filter(entity.code=="I")%>%
+  group_by(prov.type)%>%
+  summarize(total=sum(total.payment))%>%
+  top_n(25)%>%
+  as.data.frame()
+
+p<-ggplot(data=claims.prov.summaryI,mapping=aes(x=reorder(prov.type, -total),y=total,fill=reorder(prov.type, -total)))
+p<-p+geom_bar(stat="identity")
+p<-p+theme(legend.position="none")
+p<-p+theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+p<-p+labs(x="",y="Total Payments",title="Top 25 Provider Types by Total Payments (IP)")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+
+```
+
+_
+```{r}
+
+#Top 25 Organizational Provider types
+
+claims.prov.summaryO<-claims.data%>%
+  filter(entity.code=="O")%>%
+  group_by(prov.type)%>%
+  summarize(total=sum(total.payment))%>%
+  top_n(25)%>%
+  as.data.frame()
+
+p<-ggplot(data=claims.prov.summaryO,mapping=aes(x=reorder(prov.type, -total),y=total,fill=reorder(prov.type, -total)))
+p<-p+geom_bar(stat="identity")
+p<-p+theme(legend.position="none")
+p<-p+theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+p<-p+labs(x="",y="Total Payment",title="Top 25 Provider Types by Total Payments (OP)")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+
+The following graphs illustrate the distribution of total payments made to providers (both IP and OP).  The density plot and normal qq plot indicate that the data are heavily skewed to the right.  In other words, total payments are concentrated among top providers.
+
+```{r}
+
+
+paymentDist<-claims.data%>%
+  group_by(NPI)%>%
+  summarize(total=sum(total.payment))%>%
+  as.data.frame()
+
+payment.sample<-paymentDist%>%
+  sample_n(50000)
+
+p<-ggplot(data=payment.sample,mapping=aes(x=total))
+p<-p+geom_density(fill="light blue")
+p<-p+labs(y="Density",x="Payments to Providers(<$5M)",title="Density Plot")+xlim(0,5000000)
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+
+q<-ggplot(data=payment.sample, aes(sample=total))
+q<-q+geom_qq()
+q<-q+geom_qq_line()
+q<-q + scale_y_continuous(labels = scales::comma)
+q<-q+labs(title="Normal QQ Plot")
+q<-q+theme(plot.title = element_text(hjust = 0.5))
+
+cowplot::plot_grid(p,q)
+
+```
+  
+  
+  
+Finally, there seems to be a significant difference in average payment per service for male and female providers:    
+```{r}
+#gender plot
+
+gender.data<-claims.data%>%
+  group_by(gender)%>%
+  na.omit()%>%
+  summarize(mean=mean(avg.payment))%>%
+  as.data.frame()
+
+p<-ggplot(data=gender.data,mapping=aes(x=gender,y=mean,fill=gender))
+p<-p+geom_bar(stat="identity")
+p<-p+labs(x="Gender",y="Average Payment per Service",fill="Gender",title="Average Payment by Gender")
+p<-p+geom_text(aes(label=round(mean,2)),vjust=-.2)
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+  
+    
+    
+Based on this limited exploratory analysis, I propose three research questions:
+
+1) How are payments distributed among providers? Is the distribution different for IP and OP?
+
+2) If there is a significant concentration of payments, what might explain that?  How does entity type affect payments? How does the concentration of services relate to the concentration of payments?
+
+3) Is there gender inequity in medicare payments?  Can that inequality be explained by some other factor, like payment rates for particular healthcare fields (represented by entity type)? 
+
+
+# Statistical Analysis  
+
+In the following four sections, I will analyze the distribution of payments made to individual and organizational providers, and differences in payment among male and female providers.  I will also develop a linear model for predicting payments to providers. 
+
+## Individual Providers
+
+The density and normal q-q plots for total payments to individual providers show that the data is highly skewed.  The density plot is skewed to the right, and the normal qq-plot reveals a distortion at the "top end" of the data.  If the data were normal, I would expect to see a bell shaped density plot and a linear normal qq plot.  
+
+```{r}
+#Payments to Individuals
+
+paymentDistI<-claims.data%>%
+  filter(entity.code=="I")%>%
+  group_by(NPI)%>%
+  summarize(total=sum(total.payment),services=sum(svc.count))%>%
+  as.data.frame()
+
+payment.sample<-paymentDistI%>%
+  sample_n(50000)
+
+p<-ggplot(data=payment.sample,mapping=aes(x=total))
+p<-p+geom_density(fill="light blue")
+p<-p+labs(y="Density",x="Payments to Providers",title="Density Plot")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+
+
+q<-ggplot(data=payment.sample, aes(sample=total))
+q<-q+geom_qq()
+q<-q+geom_qq_line()
+q<-q + scale_y_continuous(labels = scales::comma)
+q<-q+labs(title="Normal QQ Plot")
+q<-q+theme(plot.title = element_text(hjust = 0.5))
+
+cowplot::plot_grid(p,q)
+
+TopTenPercent<-round(payments.decile$`cum. payment proportion`[payments.decile$decile=='90-100']*100,1)
+
+Top50Percent<-round(payments.decile$`cum. payment proportion`[payments.decile$decile=='50-60']*100,1)
+
+Top10Serv<-round(payments.decile$`services proportion`[1],4)*100
+
+maxPaymentI<-round(max(paymentDistI$total),2)
+maxServiceI<-(paymentDistI$services[paymentDistI$total==max(paymentDistI$total)])
+maxPaymentNPI<-paymentDistI$NPI[paymentDistI$total==max(paymentDistI$total)]
+maxPaymentInd<-claims.data%>%
+  filter(NPI==maxPaymentNPI)
+maxPaymentIProv<-as.character(head(maxPaymentInd$prov.type,1))
+maxPaymentIState<-as.character(head(maxPaymentInd$state,1))
+
+```
+
+The top individual providers collected the lion's share of payments.  The top 10% of providers (ranked by total payments) received `r TopTenPercent`% of payments and the top 50% of providers received `r Top50Percent`% of payments.  In fact, the highest paid provider, who is an ophthalmologist from Florida, collected $`r round(maxPaymentI/1000000,1)` million between 2012 and 2016.  The chart below shows total payments and number of services for deciles of individual providers (ranked by total payment).  It reveals that the highest paid providers also provided the most services.  So, for example, the top 10% of providers received `r TopTenPercent`% of payments and performed `r Top10Serv`% of services. 
+
+```{r}
+
+#Dist of payments to individuals
+
+payments.decile<-paymentDistI%>%
+  arrange(desc(total))%>%
+  mutate(`payment proportion`=total/sum(total))%>%
+  mutate(`services proportion`=services/sum(services))%>%
+  mutate(decile=as.factor(ntile(n=10)))%>%
+  group_by(decile)%>%
+  summarize(`payment proportion`=sum(`payment proportion`),`services proportion`=sum(`services proportion`))%>%
+  mutate(`cum. payment proportion` = cumsum(`payment proportion`))%>%
+  mutate(`cum. services proportion` = cumsum(`services proportion`))%>%
+  mutate(decile=c("90-100","80-90","70-80","60-70","50-60","40-50","30-40","20-30","10-20","0-10"))
+
+
+k<-kable(payments.decile, caption ="Payment and Services Distribution by Decile (Individuals)", format = "latex",row.names = F)
+kableExtra::kable_styling(k,latex_options = "hold_position")
+
+
+```
+
+\newpage
+
+## Organizational Providers  
+
+The density and normal q-q plots for total payments to organizational providers show that the data is highly skewed.  The density plot is skewed to the right, and the normal qq-plot reveals a distortion in the "top end" of the data.  If the data were normal, I would expect to see a bell shaped density plot and a linear normal qq plot.  
+
+```{r}
+#Payments to Organizatioal
+
+paymentDistO<-claims.data%>%
+  filter(entity.code=="O")%>%
+  group_by(NPI)%>%
+  summarize(total=sum(total.payment),services=sum(svc.count))%>%
+  as.data.frame()
+
+p<-ggplot(data=paymentDistO,mapping=aes(x=total))
+p<-p+geom_density(fill="light blue")
+p<-p+labs(y="Density",x="Payments to Providers",title="Density Plot")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+
+q<-ggplot(data=paymentDistO, aes(sample=total))
+q<-q+geom_qq()
+q<-q+geom_qq_line()
+q<-q + scale_y_continuous(labels = scales::comma)
+q<-q+labs(title="Normal QQ Plot")
+q<-q+theme(plot.title = element_text(hjust = 0.5))
+
+cowplot::plot_grid(p,q)
+
+TopTenPercentO<-round(payments.decileO$`cum. payment proportion`[payments.decileO$decile=='90-100']*100,1)
+
+Top50PercentO<-round(payments.decileO$`cum. payment proportion`[payments.decileO$decile=='50-60']*100,1)
+Top10ServO<-round(payments.decileO$`services proportion`[1],4)*100
+
+maxPaymentO<-round(max(paymentDistO$total),2)
+maxPaymentNPI<-paymentDistO$NPI[paymentDistO$total==max(paymentDistO$total)]
+maxPaymentOrg<-claims.data%>%
+  filter(NPI==maxPaymentNPI)
+maxPaymentOProv<-as.character(head(maxPaymentOrg$prov.type,1))
+maxPaymentOState<-as.character(head(maxPaymentOrg$state,1))
+```
+
+Interestingly, the total payments made to organizational providers are more concentrated at the top than those made to individual providers.  The top 10% of providers (ranked by total payments) received `r TopTenPercentO`% of payments and the top 50% of providers received `r Top50PercentO`% of payments.  The highest paid provider, a clinical laboratory in NC, collected $`r maxPaymentO` between 2012 and 2016.  The chart below shows total payments and number of services for deciles of organizational providers (ranked by total payment).  It reveals that the highest paid providers also provided the most services.  So, for example, the top 10% of providers received `r TopTenPercentO`% of payments and performed `r Top10ServO`% of services. 
+_
+```{r}
+#Dist of payments to organizational
+
+payments.decileO<-paymentDistO%>%
+  arrange(desc(total))%>%
+  mutate(`payment proportion`=total/sum(total))%>%
+  mutate(`services proportion`=services/sum(services))%>%
+  mutate(decile=as.factor(ntile(n=10)))%>%
+  group_by(decile)%>%
+  summarize(`payment proportion`=sum(`payment proportion`),`services proportion`=sum(`services proportion`))%>%
+  mutate(`cum. payment proportion` = cumsum(`payment proportion`))%>%
+  mutate(`cum. services proportion` = cumsum(`services proportion`))%>%
+  mutate(decile=c("90-100","80-90","70-80","60-70","50-60","40-50","30-40","20-30","10-20","0-10"))
+
+k<-kable(payments.decileO, caption ="Payment and Services Distribution by Decile (Organizations)", format = "latex",row.names = F)
+kableExtra::kable_styling(k,latex_options = "hold_position")
+
+
+```
+
+\newpage
+
+## Gender Disparity
+
+In the exploratory analysis, I noted that the average payment per service is higher for male providers than female providers. In this section, I will consider a common explanation for gender pay inequity: women tend to work in fields that pay less.  The following two figures show the top 25 female and male provider types as ranked by the total number of male and female providers in each field:
+ 
+```{r}
+#Male Top25
+summaryMProv<-claims.data%>%
+  filter(entity.code=="I")%>%
+  filter(gender=="M")%>%
+  group_by(NPI)%>%
+  sample_n(1)
+
+MProv<-as.data.frame(summary(summaryMProv$prov.type))
+m<-row.names(MProv)
+MProv<-MProv%>%
+  mutate(Specialty=m)%>%
+  mutate(Number=`summary(summaryMProv$prov.type)`)%>%
+  select(-1)
+
+MTop25Prop<-(round(sum(MProv$Number[1:25])/sum(MProv$Number),4)*100)
+
+p<-ggplot(data=top_n(MProv,25),mapping=aes(x=reorder(Specialty, -Number),y=Number,fill=reorder(Specialty, -Number)))
+p<-p+geom_bar(stat="identity")
+p<-p+theme(legend.position="none")
+p<-p+theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+p<-p+labs(x="",y="Number of Providers",title="Top 25 Male Provider Types")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+
+_
+
+```{r}
+#Female Top25
+summaryFProv<-claims.data%>%
+  filter(entity.code=="I")%>%
+  filter(gender=="F")%>%
+  group_by(NPI)%>%
+  sample_n(1)
+
+FProv<-as.data.frame(summary(summaryFProv$prov.type))
+f<-row.names(FProv)
+FProv<-FProv%>%
+  mutate(Specialty=f)%>%
+  mutate(Number=`summary(summaryFProv$prov.type)`)%>%
+  select(-1)
+
+FTop25Prop<-(round(sum(FProv$Number[1:25])/sum(FProv$Number),4)*100)
+
+p<-ggplot(data=top_n(FProv,25),mapping=aes(x=reorder(Specialty, -Number),y=Number,fill=reorder(Specialty, -Number)))
+p<-p+geom_bar(stat="identity")
+p<-p+theme(legend.position="none")
+p<-p+theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+p<-p+labs(x="",y="Number of Providers",title="Top 25 Female Provider Types")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+
+We can quantify the influence of provider type on gender-based pay inequalities by looking at the proportion of total medicare payments made to providers working in specialties that are popular among women and men, respectively. 
+
+```{r}
+#Proportion of total payments for top 25 specialites by gender
+
+claims.prov.summaryI2<-claims.data%>%
+  filter(entity.code=="I")%>%
+  group_by(prov.type)%>%
+  summarize(total=sum(total.payment))%>%
+  as.data.frame()
+
+paymentM<-c()
+for(i in 1:25){
+  paymentM[i]<-claims.prov.summaryI2$total[claims.prov.summaryI2$prov.type==MProv$Specialty[i]]
+}
+
+PropPaymentM25<-round(sum(paymentM)/sum(claims.prov.summaryI2$total),4)*100
+
+paymentF<-c()
+for(i in 1:25){
+  paymentF[i]<-claims.prov.summaryI2$total[claims.prov.summaryI2$prov.type==FProv$Specialty[i]]
+}
+
+PropPaymentF25<-round(sum(paymentF)/sum(claims.prov.summaryI2$total),4)*100
+
+```
+
+Consider the top 25 female specialties and the top 25 male specialties from the plots above.  If we look at the proportion of total payments going to *all* providers in those two "sets" of specialties, we find that the top 25 female specialties account for `r PropPaymentF25`% of total payments and the top 25 male specialties account for `r PropPaymentM25`% of payments.  This supports the claim that gender-based pay inequities are related to the fields in which men and women tend to work.
+
+```{r}
+#Nurse Practitioner Proportion
+FNurseProp<-round(FProv$Number[FProv$Specialty==FProv$Specialty[1]]/sum(FProv$Number),4)*100
+MNurseProp<-round(MProv$Number[MProv$Specialty=="Nurse Practitioner"]/sum(MProv$Number),4)*100
+
+#Nurse Proportion of Avg Payment per Service
+
+NPpropAvgPayment<-round(mean(claims.data$avg.payment[claims.data$entity.code=="I" & claims.data$prov.type=="Nurse Practitioner"])/mean(claims.data$avg.payment[claims.data$entity.code=="I" & claims.data$prov.type!="Nurse Practitioner"]),4)
+
+NPAvgPayment<-round(mean(claims.data$avg.payment[claims.data$entity.code=="I" & claims.data$prov.type=="Nurse Practitioner"]),2)
+
+IMAvgPayment<-round(mean(claims.data$avg.payment[claims.data$entity.code=="I" & claims.data$prov.type=="Internal Medicine"]),2)
+  
+FNPAvgPayment<-round(mean(claims.data$avg.payment[claims.data$entity.code=="I" & claims.data$prov.type=="Nurse Practitioner" & claims.data$gender=="F"]),2)
+```
+To give one specific example, the most popular female provider type is Nurse Practitioner (NP): `r FNurseProp`% of female providers are NPs, while only `r MNurseProp`% of male providers are NPs.  As one might expect, NPs are paid less on average ($`r NPAvgPayment` per service) than providers specializing in Internal Medicine (the most popular male provider type), who earn $`r IMAvgPayment` per service.  Accordingly, the relative prevalence of female NPs may explain lower *average* payment amounts for female providers as a whole.  
+
+Yet "provider type" does not entirely explain the pay gap.  If we compare "apples to apples" -- e.g., average payments to female NPs and average payments to male NPs-- a more complicated picture emerges.  The following two graphs demonstrate gender pay inequities within the same healthcare field (as represented by provider type).  The first graph is a bar plot of the differences between average payments for male and female practitioners who are the same provider type.  Negative values indicate that male providers in a certain field receive higher average payments than female providers, while positive values indicate that female providers receive higher average payments than their male counterparts.  There are clearly more negative observations than positive observations, which shows that male providers tend to receive higher average payments than their female counterparts.
+
+```{r}
+AvgPaymentMProv<-claims.data%>%
+  filter(entity.code=="I")%>%
+  filter(gender=="M")%>%
+  filter(prov.type!="All Other Suppliers")%>%
+  filter(prov.type!="Undefined Physician type")%>%
+  filter(prov.type!="Unknown Supplier/Provider Specialty")%>%
+  group_by(prov.type)%>%
+  summarize(`AvgPayment (Male)`=mean(avg.payment))%>%
+  arrange(prov.type)
+
+AvgPaymentFProv<-claims.data%>%
+  filter(entity.code=="I")%>%
+  filter(gender=="F")%>%
+  filter(prov.type!="All Other Suppliers")%>%
+  filter(prov.type!="Undefined Physician type")%>%
+  filter(prov.type!="Unknown Supplier/Provider Specialty")%>%
+  group_by(prov.type)%>%
+  summarize(`AvgPayment (Female)`=mean(avg.payment))%>%
+  arrange(prov.type)
+
+AvgPaymentGender<-left_join(x=AvgPaymentFProv,y=AvgPaymentMProv,by.x=prov.type)
+AvgPaymentGender<-AvgPaymentGender%>%
+  mutate(`Difference F-M`=`AvgPayment (Female)`-`AvgPayment (Male)`)
+
+
+p<-ggplot(data=AvgPaymentGender,mapping=aes(x=reorder(prov.type, `Difference F-M`),y=`Difference F-M`,fill=reorder(prov.type, `Difference F-M`)))
+p<-p+geom_bar(stat="identity")
+p<-p+theme(legend.position="none")
+p<-p+labs(x="",y="Difference",title="Difference in Avg. Payments (M-F)")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p<-p+theme(axis.text.x = element_blank())
+p
+
+AvgDiff<-round(mean(AvgPaymentGender$`Difference F-M`),2)
+AvgDiffPercent<-round(mean(AvgPaymentGender$`Difference F-M`)/mean(AvgPaymentGender$`AvgPayment (Male)`),4)*-100
+
+T<-t.test(x=AvgPaymentGender$`AvgPayment (Female)`,y=AvgPaymentGender$`AvgPayment (Male)`, paired = TRUE)
+conf.int<-T$conf.int[1:2]
+```
+The following graph is a box plot of the differences in average payments to males and females of the same provider type.  Women receive $`r AvgDiff*-1` (95% confidence interval: (`r round(conf.int,2)`) less per service on average than their male colleagues-- a `r AvgDiffPercent`% difference.  Female providers tend to receive lower average payments than male providers regardless of provider type.  In other words, the data do not support the claim that women are paid less because they tend to work in lower paying fields.
+
+```{r}
+q<-ggplot(data=AvgPaymentGender,mapping=aes(y=`Difference F-M`))
+q<-q+geom_boxplot(fill="light blue")
+q<-q+theme(legend.position="none")
+q<-q+labs(y="Difference in Payments (M-F)",title="Box plot of Difference in Avg. Payments (M-F)")
+q<-q+theme(plot.title = element_text(hjust = 0.5))
+q
+
+```
+
+## Predictive Model
+
+I used 5% of the "claims" data to build a linear model for "avg.payment" with "entity.code", "prov.type" and "year" as explanatory variables.  I then constructed a data frame from the 2017 data consisting of average payments for each provider type and entity code.  Finally, I ran the data frame through my model.  The following graph shows actual avg. payments for 2017 vs. predicted avg.payments for 2017.  The model performs fairly well, though there are a number of outliers.  If the model performed perfectly, I would expect all of the observations on the line y=x. Adjusted $R^2$ is somewhat low: `r round(adjR,3)`.
+
+```{r}
+claims.model<-claims.data%>%
+  select(avg.payment,year,entity.code,prov.type)%>%
+  sample_frac(.05)
+
+modfit<-lm(avg.payment~entity.code+prov.type+year,data = claims.model)
+
+s<-summary(modfit)
+adjR<-s$adj.r.squared
+
+claims.data2017<-claims1%>%
+  select(year,NPI,prov.type,entity.code,avg.payment)%>%
+  filter(year==2017)
+
+claims.data2017<-as.data.frame(claims.data2017)
+
+model2017<-claims.data2017%>%
+  group_by(prov.type)%>%
+  group_by(entity.code,add = TRUE)%>%
+  summarize(`mean payment`=mean(avg.payment))%>%
+  filter(prov.type!="Advanced Heart Failure and Transplant Cardiology")%>%
+  filter(prov.type!="Unknown Supplier/Provider Specialty")%>%
+  filter(prov.type!="Undefined Physician type")%>%
+  filter(prov.type!="All Other Suppliers")
+
+pred<-as.data.frame(predict.lm(modfit,newdata=data.frame(entity.code=as.factor(model2017$entity.code),prov.type=as.factor(model2017$prov.type),year=2017)))
+
+model2017pred<-cbind(model2017,prediction=pred$`predict.lm(modfit, newdata = data.frame(entity.code = as.factor(model2017$entity.code), prov.type = as.factor(model2017$prov.type), year = 2017))`)
+
+p<-ggplot(data=model2017pred,mapping=aes(y=`mean payment`,x=prediction))
+p<-p+geom_point()
+p<-p+geom_abline(intercept = 0)
+p<-p+labs(x="predicted avg.payment",y="actual avg.payment",title="Actual Value v. Predicted Value Plot")
+p
+```
+
+# Conclusions and Future Work
+
+This report analyzed the distribution of Medicare payments to individual and organizational providers, the distribution of services, and the distribution of payments with respect to gender. We found that the concentration of payments reflects a similar concentration of services.  It seems reasonable for providers to receive more payments for more services.  Yet the concentration of payments and services among organizational providers is particularly acute: The top 10% of organizational providers received `r TopTenPercentO`% of payments, and the top 50% of providers received `r Top50PercentO`% of payments.  This level of concentration raises concerns about monopolies in healthcare industries.  It would be worth investigating the pricing practices of major organizational providers further. 
+
+The report also noted a significant inequity in medicare payments to male and female providers. Women receive $`r AvgDiff*-1` (95% confidence interval: (`r round(conf.int,2)`) less per service on average than their male colleagues-- a `r AvgDiffPercent`% difference.  Female providers tend to receive lower average payments than male providers regardless of provider type.  A difference in average payment amount might also reflect different services rendered by male and female providers of the same type.  It would be helpful to include an overview of services (pricing, type, etc.) in an analysis of payment disparities.
+
+Additionally, a linear model for predicting medicare payments was constructed.  The actual v. predicted plot revealed that this model was very accurate in some cases, and less accurate in others. Perhaps the model could be improved upon by considering other variables and modelling techniques. For example, it may be helpful to analyze the data for geographic variations in medicare payments and services.  Geography could potentially serve as another explanatory variable in the model.
+
+
+
+
+
+
+

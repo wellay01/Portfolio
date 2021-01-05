@@ -1,0 +1,454 @@
+---
+title: "An Assessment of Carbon Dioxide Emissions"
+author: "Adam Wells"
+date: "October 28, 2019"
+output:
+    pdf_document:
+      highlight: haddock
+      keep_tex: no
+      number_sections: no
+    html_document:
+      df_print: paged
+geometry: margin = 0.5in
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{array}
+- \usepackage{multirow}
+- \usepackage{wrapfig}
+- \usepackage{float}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{threeparttable}
+- \usepackage{threeparttablex}
+- \usepackage[normalem]{ulem}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+editor_options:
+  chunk_output_type: console
+documentclass: article
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+# This is the setup chunk
+#  Here you can set global options for the entire document
+
+library(knitr) # I recommend doing this
+library(ggplot2)
+library(tidyverse)
+library(kableExtra)
+library(readxl)
+library(DescTools)
+library(pander)
+library(tseries)
+library(forecast)
+library(stats)
+
+setwd("/Users/adamwells/Desktop/5054--Stat_Computing/Midterm")
+
+# Although you can call functions from a library using the following notation
+#  without loading the entire library.
+knitr::opts_chunk$set(echo = FALSE, 
+                      comment = NA, # Recommended
+                      fig.path = "./figures/",  # Store all figures here in relative path
+                      fig.align = "center",
+                      fig.width = 5,
+                      fig.height = 5,
+                      message = FALSE, # Turn off load messages
+                      warning = FALSE # Turn off warnings
+                      )
+
+```
+
+# Overview
+  
+The Intergovernmental Panel on Climate Change (IPCC) claims that "human activities are estimated to have caused approximately 1.0°C of global warming above pre-industrial levels, with a likely range of 0.8°C to 1.2°C."  Moreover, the IPCC argues that limiting CO~2~ emissions is essential for mitigating anthropogenic climate change: "limiting warming to 1.5°C implies reaching net zero CO~2~ emissions globally around 2050 and concurrent deep reductions in emissions of non-CO~2~ forcers" (Report available at: https://www.ipcc.ch/sr15/).  
+
+Given the exponential increase in CO~2~ emissions since the industrial revolution, the IPCC's recommendation represents an enormous challenge, requiring a clear-eyed understanding of CO~2~ emissions.  Accordingly, this report will summarize important trends related to atmospheric CO~2~ concentrations and global CO~2~ emissions.  The analysis will draw on four publicly available data sets (see below) containing information on atmospheric CO~2~, historical CO~2~ emissions (by region and country), and per capita CO~2~ emissions.  
+
+# Data Selections and Cleaning
+  
+This report makes use of four publicly available data sets related to CO~2~ emissions and atmospheric concentrations:
+
+1) "Carbon Dioxide Levels in Atmosphere: Atmospheric carbon dioxide data from Mauna Loa Observatory since 1958"  (https://www.kaggle.com/ucsandiego/carbon-dioxide).  This data set contains monthly measurements of atmospheric CO~2~ at the Mauna Loa Observatory (HI) from 1958-2017.  Measurements were recorded on the 15th day of each month at midnight.  This data set provides excellent insight into historical trends related to atmospheric CO~2~.  The data are already "clean" with the exception of a few NAs. 
+
+```{r}
+archive <- read.csv("~/Desktop/5054--Stat_Computing/Midterm/archive.csv")
+archive2<-na.omit(archive)
+```
+  
+2) "CO~2~ and GHG emission data of different countries from 1750 - 2019" (https://www.kaggle.com/srikantsahu/CO2-and-ghg-emission-data).  This data set contains yearly measurements of CO~2~ emissions from 1751 to 2017 for nearly every country/region in the world.   It provides an excellent overview of historical trends related to CO~2~ emissions.  This data set was originally "wide" format.  I used dplyr's "gather" function to convert it to "long" format.  I also cleaned the "Year" column by removing extraneous text.
+  
+```{r}
+emission.data<-read.csv("~/Desktop/5054--Stat_Computing/Midterm/emission data.csv")
+emission.data<-emission.data%>%
+  gather(Year,Value,-Country)%>%
+  separate(Year, 
+           into = c("text", "Year"), 
+           sep = "(?<=[A-Za-z])(?=[0-9])")%>%
+  select(1,3,4)
+```
+  
+3) "Global Carbon Atlas" (http://www.globalcarbonatlas.org/en/CO2-emissions).  This data set contains yearly measurements of every country's CO~2~ emissions from 1960-2017.  It is helpful for determining which countries produce the most CO~2~.  It does not contain as much historical detail as "CO~2~ and GHG emission data" (see above), but it is more consistent with respect country names.  So it is more useful in tracking CO~2~ emissions by country.  The data set was originally in "wide" format.  I used dplyr's "gather" function to convert it to "long" format.
+
+
+```{r}
+GlobalCO2 <- read_excel("export_20191027_0703.xlsx", skip = 1)
+
+GlobalCO2<-GlobalCO2%>%
+  gather(Country,Value,-...1)%>%
+  rename(Year=...1)%>%
+  na.omit()
+```
+
+4) "CO~2~ Emissions Per Capita" (https://ourworldindata.org/CO2-and-other-greenhouse-gas-emissions).  This data set tracks CO~2~ emissions per capita from 1800-2017 for nearly every country in the world.  It is very useful for assessing trends in per capita carbon emissions.  The data set was assembled from other data sets relating to CO~2~ emissions and population. It did not require further cleaning.
+
+```{r}
+co.emissions.per.capita <- read.csv("~/Desktop/5054--Stat_Computing/Midterm/co-emissions-per-capita.csv")
+
+emission.data2<-emission.data%>%
+  group_by(Year)%>%
+  filter(Year>=1800)%>%
+  mutate(Proportion=Value/max(Value))%>%
+  group_by(Country,add=T)%>%
+  summarize(Avg.Prop=mean(Proportion),Total=Value)%>%
+  filter(Country=="United States"|Country=="EU-28"|Country=="China"|Country=="Middle East"|Country=="Africa"|Country=="India"|Country=="Asia and Pacific (other)"|Country=="Americas (other)"|Country=="Europe (other)")
+```
+
+
+# Research Questions & Exploratory Data Analysis
+
+```{r}
+x<-round(mean(archive$Carbon.Dioxide..ppm.[archive$Year==1960],na.rm=T))
+y<-round(mean(archive$Carbon.Dioxide..ppm.[archive$Year==2017],na.rm=T))
+v<-round(100*(y-x)/x)
+s<-(emission.data$Value[emission.data$Country=="World"&emission.data$Year==1960])
+t<-(emission.data$Value[emission.data$Country=="World"&emission.data$Year==2017])
+w<-round(100*(t-s)/s)
+u<-round(100*mean(emission.data2$Avg.Prop[emission.data2$Country=="United States"& emission.data2$Year%in%c(2007:2017)]))
+```
+
+Data show that CO~2~ atmospheric concentration and total emissions are increasing.  So, for example, the mean atmospheric CO~2~ content (ppm) was `r x` in 1960 and `r y` in 2017-- an increase of `r v`%.   Similarly, the worldwide emission of CO~2~ went from `r s` in 1960 to `r t` in 2017-- an increase of `r w`%.  Additionally, the data show that the United States is a major producer of CO~2~. From 2007 to 2017, the US accounted for an average of `r u`% of worldwide yearly CO~2~ emissions.
+
+These preliminary descriptive statistics point toward a number of interesting research topics.  This report will consider the following questions:
+
+  1) What are the historical trends in atmospheric CO~2~ concentration?  
+  2) What are the historical trends in worldwide CO~2~ emissions?  
+  3) Which countries produce the most CO~2~, and how have their emissions changed over time?  
+  4) What are the per capita CO~2~ emissions for major producers of CO~2~, and how have per capita emissions changed over time?  
+
+
+# Statistical Analysis
+
+This section contains four subsections corresponding to the four research questions listed above.  Each section contains graphical and numerical summaries of relevant data.
+
+## Atmospheric CO~2~ Concentration
+
+The following table summarizes data collected at  Mauna Loa Observatory (HI).  It shows a marked increase in mean atmospheric CO~2~ levels by decade from 1960 to 2017, where mean concentration is defined as:
+$$\frac{\sum{\text{concentration(ppm)}}}{\text{n measurements per decade}}$$
+  
+  
+```{r}
+#Mean CO~2~ levels by Year
+Table<-archive%>%
+  filter(Year>=1960)%>%
+  mutate(Decade_Start=(Year-Year%%10))%>%
+  group_by(Decade_Start)%>%
+  summarize("Mean CO2"=mean(Carbon.Dioxide..ppm.,na.rm=T))
+
+k<-kable(Table,format="latex",caption = "Average Atmospheric CO2 Levels (ppm) by Decade")
+kable_styling(k,latex_options = "hold_position")
+```
+
+  
+  
+The following plot further demonstrates the magnitude of increases in atmospheric CO~2~ from 1958-2017.  It shows all CO~2~ measurements with a linear trend line in red and polynomial trend line (degree=3) in blue.  The zig-zag pattern is due to seasonal fluctuations, but the overall trend is clear: atmospheric CO~2~ is increasing.  It is worth noting that the data appear linear for the most part, but after 2005 the difference between the blue (polynomial) trend line and the red (linear) trend line suggests that atmospheric CO~2~ increased at a rate greater than the linear model would predict.  This may indicate that the *rate* of CO~2~ increase is accelerating in recent years.
+  
+  
+    
+```{r}
+#Plot CO~2~ levels
+p<-ggplot(data=archive,mapping=aes(x=Decimal.Date,y=Carbon.Dioxide..ppm.))
+p<-p+geom_line(size=.1)
+p<-p+stat_smooth(method="lm", formula = y ~ poly(x,3), col="blue")
+p<-p+stat_smooth(method="lm", col="red")
+p<-p+labs(title="Atmospheric CO2 Levels over Time",x="Date",y="CO2 (ppm)")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+  
+    
+  
+Since this data is a fairly linear, we can conduct a simple linear regression in order to develop predictions with respect to atmospheric CO~2~ concentrations.  Results of the linear regression are summarized below:  
+  
+  
+  
+```{r}
+fit<-lm(Carbon.Dioxide..ppm.~Decimal.Date,data=archive)
+pander(summary(fit),caption = "")
+```
+  
+
+
+A linear regression of atmospheric CO~2~ data yields the following equation,
+$$y=1.53x-2688$$
+where y=CO~2~(ppm) and x=year.  The $R^2$ value (.98) tells us that 98% of the variability in the data can be attributed to the linear model.  In other words, our equation is a good fit for the data!  The following table shows predictions for various concentrations of atmospheric CO~2~.
+
+
+   
+```{r, include=F}
+#When will CO~2~ levels reach 450ppm?
+fit_1<-lm(Decimal.Date~Carbon.Dioxide..ppm.,data=archive)
+Linear<-tibble(round(predict(fit_1, data.frame(Carbon.Dioxide..ppm.=c(425, 450, 475, 500, 525, 550)))))
+
+
+```
+
+```{r}
+Linear<-cbind(Linear,as.numeric(c(425, 450, 475, 500, 525, 550)))
+Linear<-Linear%>%select(2,1)
+colnames(Linear)=c("CO2(ppm)","Year")
+
+k<-kable(Linear,format="latex",caption = "Predicted Years for Various Atmospheric CO2 Levels",row.names = F)
+kable_styling(k,latex_options = "hold_position")
+```
+\  
+\newpage 
+
+It was noted above that the *rate* of CO~2~ increase is accelerating in recent years.  This implies that predictions based on simple linear regression could be inaccurate.  We can improve on the simple linear model by using an ARIMA model for time series forecasting.  The following plot shows CO~2~ concentration predictions for the next 100 years.  The blue bands represent a 95% confidence interval.
+  
+  
+```{r}
+archive3<-archive%>%
+  select(4)
+
+archive.ts<-archive3%>%
+  ts(start = c(1958,1),frequency = 12)%>%
+  na.remove()
+
+ar<-auto.arima(archive.ts)
+arima_forecast = forecast(ar, h = 1200,level = .95)
+
+autoplot(arima_forecast)+labs(x="Year", y="CO2(ppm)")+
+  scale_x_continuous(breaks=seq(1960,2120,by=20))+
+  scale_y_continuous(breaks=seq(300,600,by=25))
+```
+  
+  
+  
+The following table shows predictions for various concentrations of atmospheric CO~2~ using the ARIMA model.
+  
+  
+```{r include=FALSE}
+prediction<-data.frame(summary(arima_forecast))
+Year <- as.numeric(rownames(prediction))
+rownames(prediction) <- NULL
+prediction <- cbind(Year,prediction)
+prediction <- prediction%>%
+  arrange(Year)%>%
+  round()%>%
+  filter(Point.Forecast==list(425, 450, 475, 500, 525, 550))%>%
+  rename(CO2.ppm=Point.Forecast)
+```
+
+```{r}
+k<-kable(prediction,format="latex",caption = "Predicted Years for Various Atmospheric CO2 Levels (ARIMA)",row.names = F)
+kable_styling(k,latex_options = "hold_position")
+```
+\newpage
+  
+To put this data in context, consider that the central goal of the Paris Climate Accord is to limit the global rise in temperature to $2^o C$ ($3.6^o F$) by 2100.  In order to meet that goal, the IPCC found that atmospheric concentrations of CO~2~ will need to be kept below 450ppm: "Mitigation scenarios in which it is likely that the temperature change caused by anthropogenic GHG emissions can be kept to less than 2°C relative to pre-industrial levels are characterized by atmospheric concentrations in 2100 of about 450 ppm CO~2~ (high confidence)" (https://www.ipcc.ch/sr15/).   
+
+According to predictions based on our ARIMA model, we will likely reach 450ppm by the middle of this century.  The Paris Accord's goal of restricting atmospheric CO~2~ to 450ppm by 2100 appears extremely unlikely!  
+  
+  
+  
+ 
+  
+  
+## CO~2~ Emissions
+
+```{r}
+world<-emission.data%>%
+  filter(Country=="World")%>%
+  arrange(Value)%>%
+  mutate(YearlyIncrease = Value-lag(Value))%>%
+  arrange(desc(Year))
+
+b<-world%>%
+  slice(1:20)%>%
+  select(2,3,4)
+
+c<-mean(b$YearlyIncrease)
+```
+
+CO~2~ emissions reflect various political, social, geographical, and economic factors-- each of which deserves further research.  Yet the overall trend in CO~2~ emissions is clear.  The following table shows worldwide CO~2~ emissions for the last 20 years.  The average yearly increase in total CO~2~ emissions over that time period is `r c` metric tons per year.
+$$\text{Average Yearly Increase}=\frac{\sum{\text{(Current Year Total - Previous Year Total)}}}{\text{n Years}}$$
+  
+  
+```{r}
+world<-emission.data%>%
+  filter(Country=="World")%>%
+  arrange(Value)%>%
+  mutate(YearlyIncrease = Value-lag(Value))%>%
+  arrange(desc(Year))
+
+b<-world%>%
+  slice(1:20)%>%
+  select(2,3,4)
+
+c<-mean(b$YearlyIncrease)
+
+k<-kable(b,format="latex",caption = "Worldwide CO~2~ Emissions in Metric Tons)",row.names = F)
+kable_styling(k,latex_options = "hold_position")
+```
+
+\newpage
+
+
+The following plot shows worldwide CO~2~ emissions (measured in billions of metric tons) from 1751 to 2017.  The increase is dramatic.  CO~2~ emissions accelerate at an exponential rate, particularly after the mid-19th century.  
+\  
+\  
+  
+  
+```{r}
+p<-ggplot(data=world,mapping=aes(x=as.numeric(Year),y=Value/1000000000),color="Country")
+p<-p+geom_line(size=1,color="blue")
+p<-p+scale_x_continuous(breaks=seq(1751,2020,by=20))
+p<-p+labs(title="Worldwide CO2 Emissions by Year",y="Total Emissions (Billions of Metric Tons)",x="Year")
+p<-p+scale_y_continuous(breaks=seq(0,1600,by=100))
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+
+```
+  
+  
+    
+
+
+## CO~2~ Emissions by Country/Region  
+
+
+The following pie chart shows the percentage of total CO~2~ emissions from 1960 to 2017 for the top ten countries ranked by total emissions.  Note the relatively large proportion attributable to the United States, China, and the European Union.  (Note: I am not including a separate table of numerical summaries for this subsection because numerical proportions are included in the pie chart)  
+  
+  
+
+```{r,fig.width = 7}
+
+
+EmissionPie<-GlobalCO2%>%
+  group_by(Country)%>%
+  mutate(Total=sum(Value))%>%
+  summarize(Total=sum(Total))%>%
+  mutate(Proportion=Total/sum(Total))%>%
+  top_n(10)
+
+EmissionPie<-rbind(EmissionPie, data.frame(Country="Other",t(1-colSums(EmissionPie[,-1]))))
+
+EmissionPie$Country <- reorder(EmissionPie$Country, EmissionPie$Proportion, function(x) -max(x) )
+
+p<-ggplot(data=EmissionPie, mapping=aes(x="", y=Proportion, fill=Country)) 
+p<-p+geom_bar(stat="identity", width=1)
+p<-p+coord_polar("y", start=0) + geom_text(aes(label = paste0(round(Proportion*100))), position = position_stack(vjust = .5))
+p<-p+scale_fill_brewer(palette="Paired")
+p<-p+theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank())
+p<-p+labs(x="",y="",title="Percent of Total CO~2~ Emissions from 1960-2017 (top 10 Countries)")
+p  
+```
+\  
+\  
+\  
+   
+  
+Similarly, the following plot shows the contributions to worldwide emissions by nine major countries/regions over time.  There are a few noteworthy observations: 1) There is an exponential increase in CO~2~ emissions after the mid-19th century likely due to increasing industrialization. 2) CO~2~ emissions increase rapidly in China--and Asia more broadly--after 1960.  3) The United States and European Union account for a large share of total emissions.
+  
+(Note: "Asia & Pacific (other)" refers to Asia and Oceania minus China and India.  "Americas (other)" refers to North, Central, South America and the Caribbean minus the USA.  "Europe (other)" refers to Western and Eastern Europe minus the EU-28.)
+  
+  
+```{r,fig.width = 7}
+emission.data2$Country <- reorder(emission.data2$Country, emission.data2$Total, function(x) -max(x) )
+  
+p<-ggplot(data=emission.data2,mapping=aes(x=as.numeric(Year),y=Total/1000000000,fill=Country))
+p<-p+geom_area(position="stack")
+#p<-p+geom_line(aes(color=Country,position_stack()))
+p<-p+scale_fill_brewer(palette="Set1")
+p<-p+scale_color_brewer(palette="Set1")
+p<-p+scale_x_continuous(breaks=seq(1800,2020,by=20))
+p<-p+scale_y_continuous(breaks=seq(0,2000,by=100))
+p<-p+labs(title="Area Plot of CO2 Emissions by Year",x="Year",y="Total Emissions (Billions of Metric Tons)",fill="Country/Region")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+```
+  
+  
+  
+  
+## Per Capita CO~2~ Emissions
+  
+    
+The following table shows the average per capita CO~2~ emissions (in metric tons) from 2007-2017 for the top 10 producers of CO~2~ (measured by total emissions).  Note the relatively high rate of per capita emissions for the US, Canada, and Russia.  The per capita emissions of India and China are far less than that of the US, despite much larger populations and increasing industrialization and urbanization.  Average per capita CO~2~ is defined as:
+
+$$\frac{\sum{\text{Per Capita CO}_2}}{\text{n Years}}$$
+
+
+```{r}
+CO2perCap1<-co.emissions.per.capita%>%
+  rename(Per_Capita=Per.capita.CO..emissions..tonnes.per.capita.,Country=Entity)%>%
+  select(1,3,4)%>%
+  filter(Country=="United States"|Country=="China"|Country=="Russia"|Country=="Japan"|Country=="Germany"|Country=="India"|Country=="United Kingdom"|Country=="Canada"|Country=="Ukraine"|Country=="France")%>%
+  filter(Year>=2007)%>%
+  group_by(Country)%>%
+  summarize(MeanPerCap=mean(Per_Capita))%>%
+  arrange(desc(MeanPerCap))
+    
+k<-kable(CO2perCap1,format="latex",caption = "Average Per Capita CO2 Emissions in Metric Tons",row.names = F)
+kable_styling(k,latex_options = "hold_position")
+
+```
+
+
+The following plot shows per capita CO~2~ emissions for those countries ranked in the top 10 by total CO~2~ emissions over time.  There are a few noteworthy trends: 1) The United States, Canada, and Russia have relatively high CO~2~ emissions per capita.  2) There is a significant increase in emissions per capita for developing countries (particularly China and India) after 1950.  3) The United Kingdom has experienced a marked decline in emissions per capita starting around 1950.
+  
+  
+  
+```{r,fig.width = 7}
+CO2perCap<-co.emissions.per.capita%>%
+  rename(Per_Capita=Per.capita.CO..emissions..tonnes.per.capita.,Country=Entity)%>%
+  select(1,3,4)%>%
+  filter(Country=="United States"|Country=="China"|Country=="Russia"|Country=="Japan"|Country=="Germany"|Country=="India"|Country=="United Kingdom"|Country=="Canada"|Country=="Ukraine"|Country=="France")%>%
+  group_by(Year)%>%
+  group_by(Country,add = T)
+
+CO2perCap$Country <- reorder(CO2perCap$Country, CO2perCap$Per_Capita, function(x) -max(x) )
+
+p<-ggplot(data=CO2perCap,mapping=aes(x=as.numeric(Year),y=Per_Capita,color=Country))
+p<-p+stat_smooth(se=F,size=1.7)
+p<-p+scale_color_brewer(palette="Paired")
+p<-p+labs(title="Per Capita CO2 for the 10 Countries with the Highest Total Emissions",x="Year",y="Per Capita Emissions (metric tons)")
+p<-p+theme(plot.title = element_text(hjust = 0.5))
+p
+
+```
+
+
+# Conclusions and Future Work  
+
+
+This report analyzed trends in CO~2~ emissions and atmospheric concentrations, focusing on four main topics: 
+
+First, trends in atmospheric CO~2~ concentrations were analyzed using data from the Mauna Loa Observatory.  We noted a precipitous increase (`r v`%) in CO~2~ concentrations between 1960 and 2017.  Using this data, we were able to develop a linear model, which predicted a concentration of 450ppm by 2048.  In future work, it would be interesting to modify the model to take into account planned reductions in atmospheric CO~2~.  How long would it take to reach 450ppm if annual increases in atmospheric CO~2~ were reduced in accordance with the Paris Agreement, for example?    
+
+Second, historical trends in worldwide CO~2~ emissions were analyzed.  We found that CO~2~ emissions increased precipitously after the industrial revolution.  Additionally, the *rate* of increase continues to accelerate.  In fact, worldwide CO~2~ emissions have increased `r w`% since 1960 alone!  In the future, it would be interesting to examine the relationship between worldwide CO~2~ emissions and atmospheric CO~2~ concentration.  While both have increased dramatically, CO~2~ emissions have increased far more rapidly than atmospheric concentrations.  Why is that?  Is some CO~2~ being absorbed or otherwise recaptured?  How do CO~2~ emissions affect natural systems that cannot be fully captured by atmospheric data (oceans and waterways, for example)?
+
+Third, we examined the contributions of individual countries and regions to worldwide CO~2~ emissions.  The United States and European Union were responsible more than half of the world's yearly CO~2~ emissions over the last few decades.  Even as developing countries, like India and China, represent a larger share of the world population, they account for a much smaller proportion of CO~2~ emissions.  In future research, it would be interesting to analyze sources of CO~2~ emissions within each country.  Are the US's emissions relatively high because US citizens tend to drive more?  Is there something about Western economies or political systems that encourages CO~2~ production?
+
+Fourth, per capita CO~2~ emissions were examined for the ten countries that produce the most CO~2~.  The US had the highest per capita CO~2~ production (17.83 metric tons) followed by Canada (16.24 metric tons) and Russia (11.63 metric tons).  Per capita CO~2~ emissions have increased rapidly in India and China since 1950.  In the future, it would be interesting to look for other correlations with per capita emissions.  Do the US, Canada, and Russia have relatively large per capita levels because they have lower ratios of population to geographical area, for example?
+
+
+
+
+

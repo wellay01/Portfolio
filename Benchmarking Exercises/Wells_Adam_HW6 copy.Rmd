@@ -1,0 +1,431 @@
+---
+title: "ASC Homework 6"
+author: "Adam Wells"
+date: "11/2/2020"
+output: 
+  html_document: 
+    toc: FALSE
+    toc_depth: 3
+    toc_float: FALSE
+    highlight: haddock
+    theme: cosmo
+    df_print: paged
+    number_sections: TRUE
+    code_folding: hide
+    self_contained: TRUE
+    css: my_style_file.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T,warning = F,message = F)
+library(tidyverse)
+library(kableExtra)
+library(microbenchmark)
+library(viridis)
+library(babynames)
+library(profvis)
+library(foreach)
+library(doParallel)
+library(parallel)
+library(future.apply)
+library(boot)
+library(caret)
+```
+
+# Problem 1: Basic Comparison of Run Times 
+
+Suppose that we need to generate a sequence of odd integers from 1 to n.  
+
+## Show how to do this for n = 15 using seq, seq.int and the sequence operator :. What is the type of object returned in each case?
+
+The seq operator returns a numeric vector:
+```{r}
+str(seq(1,15,2))
+```
+
+The seq.int operator also returns a numeric vector
+```{r}
+str(seq.int(1,15,2))
+```
+
+The sequence operator returns a vector of integers.
+```{r}
+str(which(c(1:15)%%2==1))
+```
+
+## Use microbenchmark() from the microbenchmark package to compare the computing times of these three methods for a sequence of 1000 odd integers (length should be 1000), return the result in a nice table using kable(). Display a violin plot of the benchmark using autoplot().
+
+```{r}
+
+benchmark<-microbenchmark("seq"=seq(from=1, by=2, length.out=1000),
+                          "seq.int"=seq.int(from=1, by=2, length.out=1000),
+                          "sequence"=which(c(1:2000)%%2==1))
+
+summary(benchmark)%>%
+  kbl()%>%kable_styling(bootstrap_options = c("striped","hover"))
+```
+
+```{r fig.align='center'}
+autoplot(benchmark)
+```
+
+## Which of these methods is fastest? Discuss why one method may be slower than the others.
+
+The "seq.int" method is fastest.  This is likely due to the fact that "seq.int" is a primitive function, which means that it calls C code directly (see:http://adv-r.had.co.nz/Functions.html).  Seq, on the other hand, is a generic R function that relies on R code; it is therefore slightly slower.  Finally, to generate odd numbers using the ":" operator, I have also the modulo and the "which" functions.  Given the use of multiple functions, this method is the slowest.
+
+# Problem 2
+
+Consider the babynames dataset from the babynames library package.
+
+## How many unique names are there in the dataset?
+
+```{r}
+babynames<-babynames
+unique.names<-length(unique(babynames$name))
+```
+
+There are `r unique.names` unique names in the babynames dataset.  
+
+## What were the most popular male names for the years 1900, 1925, 1950, 1975, 2000? What are the most popular female names for the years 2010, 2011, 2012, 2013, 2014?
+
+```{r}
+years<-c(1900,1925,1950,1975,2000,2010,2011,2012,2013,2014)
+
+babynames%>%
+  filter(year%in%years)%>%
+  group_by(year,sex)%>%
+  arrange(desc(prop))%>%
+  summarise(most_popular=head(name,1))%>%
+  filter((year<=2000&sex=="M")|(year>2000&sex=="F"))%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover"))
+```
+
+## What are the 10 most popular baby names across all the years? What are the 10 most popular female baby names across the years?  Show the results in both a kable() table and make a bar plot using ggplot2.
+
+I want you to think of two different ways to do this problem. Feel free to use whatever library packages or functions, or loops you like (just don’t do both lapply() and sapply() as they are essentially the same approach). Use microbenchmark() with times = 2, to compare the methods. Include the time it takes to make the tables and plots. It might help to wrap your two approaches with the table and plot generation in their own functions called HW6_Partc_Method1() and HW6_Partc_Method2(). Report the final table with the benchmark times in a nicely formatted kable() table as well.
+
+### Method 1: group_by and summarize
+
+Ten most popular baby names: 
+
+```{r}
+HW6_Partc_Method1<-function(){
+  
+popular<-babynames%>%
+  group_by(name)%>%
+  summarize(total=sum(n))%>%
+  slice_max(total,n=10)
+
+popular_f<-babynames%>%
+  filter(sex=="F")%>%
+  group_by(name)%>%
+  summarize(total=sum(n))%>%
+  slice_max(total,n=10)
+
+table_pop<-popular%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+table_popf<-popular_f%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+plot_pop<-popular%>%
+  ggplot(mapping=aes(x=reorder(name,total),y=total))+
+  geom_bar(stat = "identity",fill="#630031")+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(x="",y="Total",title="Most Popular Baby Names")+
+  coord_flip()
+
+plot_f<-popular_f%>%
+  ggplot(mapping=aes(x=reorder(name,total),y=total))+
+  geom_bar(stat = "identity",fill="#ff9948")+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(x="",y="Total",title="Most Popular Female Baby Names")+
+  coord_flip()
+
+return(list(table_pop, table_popf, plot_pop, plot_f))
+}
+returns<-HW6_Partc_Method1()
+returns[[1]]
+```
+
+
+```{r fig.align='center'}
+returns[[3]]
+```
+
+Ten most popular female baby names:
+
+```{r}
+returns[[2]]
+```
+
+```{r fig.align='center'}
+returns[[4]]
+```
+
+
+### Method 2: split and map
+
+Ten most popular baby names:
+
+```{r}
+HW6_Partc_Method2<-function(){
+
+get_sum<-function(x)(sum(x$n))
+
+popular<-babynames%>%
+  split(.$name)%>%
+  map_df(get_sum)%>%
+  pivot_longer(cols=everything(),values_to="total")%>%
+  select(name,total)%>%
+  slice_max(total,n=10)
+
+popular_f<-babynames%>%
+  filter(sex=="F")%>%
+  split(.$name)%>%
+  map_df(get_sum)%>%
+  pivot_longer(cols=everything(),values_to="total")%>%
+  select(name,total)%>%
+  slice_max(total,n=10)
+
+name<-as.data.frame(rbind(popular,popular_f%>%filter(!name%in%popular$name)))%>%
+  mutate(sex=if_else(name%in%popular_f$name,"F","M"))
+
+table_pop<-popular%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+table_popf<-popular_f%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+plot_pop<-popular%>%
+  ggplot(mapping=aes(x=reorder(name,total),y=total))+
+  geom_bar(stat = "identity",fill="#630031")+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(x="",y="Total",title="Most Popular Baby Names")+
+  coord_flip()
+
+plot_f<-popular_f%>%
+  ggplot(mapping=aes(x=reorder(name,total),y=total))+
+  geom_bar(stat = "identity",fill="#ff9948")+
+  theme(axis.text.x = element_text(angle = 90))+
+  labs(x="",y="Total",title="Most Popular Female Baby Names")+
+  coord_flip()
+
+return(list(table_pop, table_popf, plot_pop, plot_f))
+}
+returns<-HW6_Partc_Method2()
+returns[[1]]
+```
+
+```{r fig.align='center'}
+returns[[3]]
+```
+
+Ten most popular female baby names:
+
+```{r}
+returns[[2]]
+```
+
+```{r fig.align='center'}
+returns[[4]]
+```
+
+### Benchmarking results
+
+```{r}
+benchmark<-microbenchmark("method1"=HW6_Partc_Method1(),
+                          "method2"=HW6_Partc_Method2(),times = 2)
+
+summary(benchmark)%>%
+  kbl()%>%kable_styling(bootstrap_options = c("striped","hover","condensed"))
+```
+
+## For your two approaches in Part c, use the profvis library to determine which portion of your code is taking the most time. Save your profiles to their own HTML files and include these in your zip file.  Make sure they are named method1_profile.html and method2_profile.html.
+
+Method 2 takes much longer than method 1.  One major difference: the split function in method 2 takes 9070 ms, while the group_by function in method 1 takes 1270 ms.  See the html files for more detailed information. 
+
+```{r}
+p1<-profvis({HW6_Partc_Method1()})
+p2<-profvis({HW6_Partc_Method2()})
+
+htmlwidgets::saveWidget(p1, "method1_profile.html")
+htmlwidgets::saveWidget(p2, "method2_profile.html")
+```
+
+# Problem 3
+
+Each of you have at least 2 cores on your computer, that is sufficient. We aren’t doing a lot of work per core in this problem, so the speed gains won’t be that significant when using more cores. So this is more just for you to get comfortable with using these methods in a very small situation that we can understand easily.
+
+## Part 1
+
+Consider the hflights dataset but remove the rows that correspond to missing data (due to cancelled flights).
+
+### Use the foreach() function with %dopar% to loop over the list of airlines.
+
+i. Obtain summary statistics for the min, max, median, mean, and standard deviation for the DepDelay and ArrDelay. Collect the answers and display them in a nice table using kable().  
+
+```{r}
+cl<-parallel::makeCluster(2,setup_timeout=0.5)
+registerDoParallel(cl)
+
+hflights<-hflights::hflights%>%na.omit()
+airlines<-unique(hflights$UniqueCarrier)
+
+y<-foreach(i=1:length(airlines),.combine=rbind,.packages=c("dplyr","tibble")) %dopar% {
+  hflights%>%filter(UniqueCarrier==airlines[i])%>%
+  summarize("Airline"=airlines[i],
+          "Min DepDelay"=min(DepDelay),
+          "Max DepDelay"=max(DepDelay),
+          "Median DepDelay"=median(DepDelay),
+          "Mean DepDelay"=mean(DepDelay),
+          "SD DepDelay"=sd(DepDelay),
+          "Min ArrDelay"=min(ArrDelay),
+          "Max ArrDelay"=max(ArrDelay),
+          "Median ArrDelay"=median(ArrDelay),
+          "Mean ArrDelay"=mean(ArrDelay),
+          "SD ArrDelay"=sd(ArrDelay))
+}
+
+y%>%
+  kbl%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+```
+
+ii. Fit a simple linear regression model with DepDelay as the predictor variable and ArrDelay as the response. Obtain the regression coefficients. Collect the answers and display them in a nice table using kable().
+
+```{r}
+
+y<-foreach(i=1:length(airlines),.combine=rbind) %dopar% {
+  x<-hflights%>%filter(UniqueCarrier==airlines[i])
+  z<-lm(ArrDelay~DepDelay,data=x)
+  a<-summary(z)
+  data.frame(a$coefficients)%>%
+    rownames_to_column(var="Variable")%>%
+    mutate("Airline"=airlines[i])%>%
+    select(Airline,Variable,"Coefficient"=Estimate)
+}
+
+y%>%
+  kbl%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+```
+
+### Write a function using foreach() that carries out k-fold cross-validation for simple linear regression involving the hflights dataset with the NA’s removed with ArrDelay as the response and DepDelay as the predictor. Determine the out-of-sample prediction error using k=5,10,20. Please see slides 34-36 in Lecture 11 from the STAT-5054 for a refresher.
+
+```{r}
+k<-c(5,10,20)
+
+Errors<-function(k,df){
+  cv.folds <- function(n, folds = 10) {
+    split(sample(1:n), rep(1:folds, length = n)) 
+  }
+  meanMSE<-foreach(j=1:length(k),.combine=rbind,.packages = c("dplyr","doParallel")) %dopar% {
+    folds<-cv.folds(nrow(df),folds=k[j])
+    MSE<-foreach(i=1:length(folds),.combine=c) %dopar% {
+      index <- folds[[i]]
+      mydata.train <- df[-index, ]
+      mydata.test <- df[index, ]
+      fit <- lm( ArrDelay~DepDelay, data = mydata.train)
+      p <- predict(fit, mydata.test)
+      sum((p - mydata.test$ArrDelay)^2) / length(index)
+    }
+    mean(MSE)
+  }
+  return(meanMSE%>%
+         bind_cols("k"=k)%>%
+         select(k,"meanMSE"=...1))
+}
+
+Errors(k,hflights)%>%
+  kbl%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+stopCluster(cl)
+```
+
+## Part 2
+
+Repeat all of the above, but this time using the parallel approaches:
+
+parLapply()
+future_lapply()
+future_map() (You can use whatever variant you want such as future_map_dfr())
+Rename your functions CV_by_parLapply, CV_by_fut_lap and CV_by_fut_map, respectively for sub-part b.
+
+You may use whatever post-processing you need to organize your results but they should no longer be in a list by the end.
+
+### 
+
+i. Obtain summary statistics for the min, max, median, mean, and standard deviation for the DepDelay and ArrDelay. Collect the answers and display them in a nice table using kable().  
+
+```{r}
+ncores<-detectCores()
+cl<-makeCluster(ncores,setup_timeout=0.5)
+
+airlines_list<-split(hflights,hflights$UniqueCarrier)
+                
+
+delay<-function(x){dplyr::tibble("Airline"=unique(x$UniqueCarrier),
+                              "Min DepDelay"=min(x$DepDelay),
+                              "Max DepDelay"=max(x$DepDelay),
+                              "Median DepDelay"=median(x$DepDelay),
+                              "Mean DepDelay"=mean(x$DepDelay),
+                              "SD DepDelay"=sd(x$DepDelay),
+                              "Min ArrDelay"=min(x$ArrDelay),
+                              "Max ArrDelay"=max(x$ArrDelay),
+                              "Median ArrDelay"=median(x$ArrDelay),
+                              "Mean ArrDelay"=mean(x$ArrDelay),
+                              "SD ArrDelay"=sd(x$ArrDelay))}
+
+
+parLapply(cl,airlines_list,delay)%>%
+  bind_rows()%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+stopCluster(cl)
+```
+
+ii. Fit a simple linear regression model with DepDelay as the predictor variable and ArrDelay as the response. Obtain the regression coefficients. Collect the answers and display them in a nice table using kable().
+
+```{r}
+plan(multisession, workers = 4)
+
+model<-function(x){
+  a<-lm(x$ArrDelay~x$DepDelay)
+  b<-summary(a)
+  plyr::unrowname(data.frame("Airline"=unique(x$UniqueCarrier),"Variable"=c("(Intercept)","DepDelay"),b$coefficients))
+}
+
+future_lapply(airlines_list,model)%>%
+  bind_rows()%>%
+  select(Airline,Variable,"Coefficient"=Estimate)%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+
+```
+
+### Write a function that carries out k-fold cross-validation for simple linear regression involving the hflights dataset with the NA’s removed with ArrDelay as the response and DepDelay as the predictor. Determine the out-of-sample prediction error using k=5,10,20.
+
+```{r}
+
+CV_by_future_sap<-function(k){
+  CV <- function(x){
+    set.seed(1)
+    train.control <- trainControl(method = "cv", number = x,allowParallel = T)
+    cv <- train(ArrDelay~DepDelay, data = hflights, method = "lm", trControl = train.control) 
+    (cv$results$RMSE)^2
+  }
+data.frame("k"=k,"meanMSE"=future_sapply(k,CV))
+}
+
+CV_by_future_sap(k)%>%
+  kbl()%>%
+  kable_styling(bootstrap_options = c("striped","hover","condensed"))
+```
